@@ -1,0 +1,6 @@
+# CODEOWNERS for kyma-project/actions
+#
+# For now, all changes reviewed by @kyma-project/security-management.
+# Revisit once the repo has more actions and more consumers.
+
+* @kyma-project/security-management
