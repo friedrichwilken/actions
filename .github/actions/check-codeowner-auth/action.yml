@@ -1,0 +1,303 @@
+name: Check codeowner authorization
+description: >-
+  Authorizes pull_request_target and pull_request_review workflow runs by
+  checking whether the PR author or a reviewer is a member of a team listed
+  in the repository's CODEOWNERS file. Designed as a programmatic substitute
+  for GitHub environment approval gates on privileged workflows.
+
+  Emits `head-sha` as an output so downstream jobs can pin
+  `actions/checkout` to the vetted commit and avoid force-push races.
+
+inputs:
+  github-token:
+    description: >-
+      Installation token from a GitHub App with `Members: Read` and
+      `Contents: Read` on the org. Do NOT pass `GITHUB_TOKEN` — it lacks
+      the org-team scope required for membership checks. The recommended
+      pattern is to mint this token in the same job via
+      `actions/create-github-app-token`, pinned to a full commit SHA.
+    required: true
+  trusted-bot-ids:
+    description: >-
+      Comma-separated list of numeric GitHub user IDs that are always
+      authorized as PR authors. Use numeric IDs, not logins — logins can
+      be re-registered after deletion. Each entry MUST be a bot account
+      (verified via `user.type === 'Bot'` at runtime). Example:
+      `29139614` for renovate[bot].
+    required: false
+    default: ''
+
+outputs:
+  head-sha:
+    description: >-
+      The PR head commit SHA that was authorized. Downstream jobs MUST
+      use this value for `actions/checkout` — never `github.head_ref`
+      (branch name, re-resolves at checkout time) or `refs/pull/N/merge`
+      (re-merges live). Pinning to this SHA is what prevents mid-run
+      force-push bypasses.
+    value: ${{ steps.authorize.outputs.head-sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Authorize
+      id: authorize
+      uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+      env:
+        TRUSTED_BOT_IDS: ${{ inputs.trusted-bot-ids }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          // check-codeowner-auth
+          //
+          // Authorizes a pull_request_target or pull_request_review run by
+          // verifying the PR author OR a reviewer at HEAD is a member of a
+          // team listed in the base-ref CODEOWNERS file.
+          //
+          // Trust boundary: this action must run BEFORE any step that
+          // executes PR-controlled code. Callers MUST NOT `actions/checkout`
+          // in the same job. See the action README for the required
+          // workflow pattern.
+
+          // ─── 1. Event-type gate ──────────────────────────────────────────
+          // Reject unexpected events immediately. This action only makes sense
+          // for events that populate `payload.pull_request`. Wiring it into
+          // e.g. `issue_comment` (a common "/retest" pattern) would silently
+          // misbehave because `pull_request.head.sha` would be undefined.
+          const ALLOWED_EVENTS = ['pull_request_target', 'pull_request_review'];
+          if (!ALLOWED_EVENTS.includes(context.eventName)) {
+            core.setFailed(
+              `Unsupported event: ${context.eventName}. ` +
+              `This action supports only: ${ALLOWED_EVENTS.join(', ')}.`
+            );
+            return;
+          }
+
+          const pr = context.payload.pull_request;
+          if (!pr) {
+            core.setFailed('Event payload has no `pull_request` object.');
+            return;
+          }
+
+          const org = context.repo.owner;
+          const repo = context.repo.repo;
+          const prAuthor = pr.user.login;
+          const prAuthorId = pr.user.id;
+          const prAuthorType = pr.user.type;
+          const headSha = pr.head.sha;
+          const baseRef = pr.base.ref;
+
+          core.info(`PR #${pr.number} by ${prAuthor} (id=${prAuthorId}, type=${prAuthorType})`);
+          core.info(`HEAD ${headSha} against base ${baseRef}`);
+
+          // Always emit head-sha so downstream jobs can pin to it, even if
+          // the authorize check itself fails (harmless — the job that
+          // consumes this output has `needs: authorize` and won't run).
+          core.setOutput('head-sha', headSha);
+
+          // ─── 2. Trusted-bot fast path ────────────────────────────────────
+          // The trusted-bot allowlist is keyed by numeric user.id, NOT login,
+          // because logins can be recreated after deletion. We ALSO assert
+          // user.type === 'Bot' as defense-in-depth: even if an attacker
+          // somehow re-registers a matching id (which shouldn't be possible),
+          // they'd also need to be classified as a Bot.
+          const trustedBotIds = (process.env.TRUSTED_BOT_IDS || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(Number)
+            .filter(Number.isFinite);
+          if (trustedBotIds.includes(prAuthorId) && prAuthorType === 'Bot') {
+            core.info(`Author ${prAuthor} (id=${prAuthorId}) is a trusted bot — authorized.`);
+            return;
+          }
+
+          // ─── 3. Fetch CODEOWNERS from the base ref ───────────────────────
+          // NEVER read CODEOWNERS from the runner filesystem — on
+          // pull_request_target a naive `actions/checkout` would place the
+          // PR-HEAD version there, and the attacker controls that file. Read
+          // from the base ref via the contents API using the App token.
+          //
+          // GitHub resolves CODEOWNERS from these locations in order:
+          //   .github/CODEOWNERS, CODEOWNERS, docs/CODEOWNERS
+          // We check them all and use the first that exists.
+          const CODEOWNERS_PATHS = ['.github/CODEOWNERS', 'CODEOWNERS', 'docs/CODEOWNERS'];
+          let codeownersContent = null;
+          let codeownersPath = null;
+          for (const path of CODEOWNERS_PATHS) {
+            try {
+              const resp = await github.rest.repos.getContent({
+                owner: org,
+                repo,
+                path,
+                ref: baseRef,
+              });
+              if (resp.data && resp.data.encoding === 'base64' && resp.data.content) {
+                codeownersContent = Buffer.from(resp.data.content, 'base64').toString('utf8');
+                codeownersPath = path;
+                break;
+              }
+            } catch (e) {
+              if (e.status !== 404) throw e;
+            }
+          }
+          if (!codeownersContent) {
+            core.setFailed(
+              `No CODEOWNERS file found in base ref \`${baseRef}\` at any of: ` +
+              CODEOWNERS_PATHS.join(', ') + '. ' +
+              'This action requires a CODEOWNERS file with @org/team entries. ' +
+              'Failing closed.'
+            );
+            return;
+          }
+          core.info(`Loaded CODEOWNERS from ${codeownersPath}@${baseRef}`);
+
+          // ─── 4. Parse CODEOWNERS ─────────────────────────────────────────
+          // Extract @org/team entries. Individual GitHub handles (e.g.
+          // @someuser) are IGNORED by this action — the design requires teams
+          // (see task doc for rationale). If a repo uses individual handles,
+          // migrate them to teams before adopting this gate.
+          //
+          // Scoping decision: codeowner of ANY path in the repo authorizes
+          // globally. This matches env-gate semantics (a human approving the
+          // env gate approves the whole run, not per-path). Path-scoped
+          // authorization is a possible future enhancement.
+          const teamSlugs = new Set();
+          const individualsIgnored = new Set();
+          for (const rawLine of codeownersContent.split('\n')) {
+            const line = rawLine.replace(/#.*$/, '').trim();
+            if (!line) continue;
+            // Format: <pattern> <@owner1> <@owner2> ...
+            const tokens = line.split(/\s+/);
+            for (let i = 1; i < tokens.length; i++) {
+              const owner = tokens[i];
+              const teamMatch = owner.match(/^@([^/]+)\/([^/\s]+)$/);
+              if (teamMatch && teamMatch[1] === org) {
+                teamSlugs.add(teamMatch[2]);
+              } else if (owner.startsWith('@') && !owner.includes('/')) {
+                individualsIgnored.add(owner);
+              }
+              // silently skip email-address owners and @other-org/team entries
+            }
+          }
+          if (individualsIgnored.size > 0) {
+            core.warning(
+              `CODEOWNERS contains individual handles which this action ignores: ` +
+              [...individualsIgnored].join(', ') +
+              `. Migrate to @${org}/<team> references to have them count.`
+            );
+          }
+          if (teamSlugs.size === 0) {
+            core.setFailed(
+              `CODEOWNERS at ${codeownersPath}@${baseRef} has no @${org}/<team> ` +
+              `entries. This action requires at least one team-scoped codeowner. ` +
+              `Failing closed.`
+            );
+            return;
+          }
+          core.info(`Codeowner teams: ${[...teamSlugs].map(t => `@${org}/${t}`).join(', ')}`);
+
+          // ─── 5. Team membership helper ───────────────────────────────────
+          // GitHub returns:
+          //   200 { state: 'active', role: 'member' | 'maintainer' } → real member
+          //   200 { state: 'pending' } → invited but not yet accepted (NOT a member)
+          //   404 → not a member at all
+          //
+          // Historical bug in the old kyma-companion action: it treated
+          // "didn't throw" as "is a member", authorizing pending invites.
+          // We explicitly require state === 'active' below.
+          async function isActiveTeamMember(username) {
+            for (const teamSlug of teamSlugs) {
+              try {
+                const resp = await github.rest.teams.getMembershipForUserInOrg({
+                  org,
+                  team_slug: teamSlug,
+                  username,
+                });
+                if (resp.data && resp.data.state === 'active') {
+                  core.info(
+                    `${username} is an active member of @${org}/${teamSlug} ` +
+                    `(role=${resp.data.role})`
+                  );
+                  return { teamSlug, role: resp.data.role };
+                }
+                if (resp.data && resp.data.state === 'pending') {
+                  core.info(
+                    `${username} has a PENDING invite to @${org}/${teamSlug} — ` +
+                    `not counted as a member.`
+                  );
+                }
+              } catch (e) {
+                if (e.status !== 404) throw e;
+              }
+            }
+            return null;
+          }
+
+          // ─── 6. Author check ─────────────────────────────────────────────
+          const authorMembership = await isActiveTeamMember(prAuthor);
+          if (authorMembership) {
+            core.info(
+              `PR author ${prAuthor} is a codeowner via ` +
+              `@${org}/${authorMembership.teamSlug} — authorized.`
+            );
+            return;
+          }
+          core.info(`PR author ${prAuthor} is not a codeowner. Checking for approvals…`);
+
+          // ─── 7. Approval check ───────────────────────────────────────────
+          // Rules:
+          //  - Take the LATEST non-COMMENTED review state per reviewer
+          //    (so a later CHANGES_REQUESTED beats an earlier APPROVED).
+          //  - Require review.commit_id === headSha — approvals on prior
+          //    commits are stale and don't count.
+          //  - Approver must be a `User` (not `Bot`) — bots that get added
+          //    to a codeowner team are a common exploit path.
+          //  - Approver cannot be the PR author (GitHub blocks this
+          //    server-side with 422; defense-in-depth here).
+          const allReviews = await github.paginate(github.rest.pulls.listReviews, {
+            owner: org,
+            repo,
+            pull_number: pr.number,
+            per_page: 100,
+          });
+          const latestReviews = new Map();
+          for (const review of allReviews) {
+            if (review.state === 'COMMENTED') continue;
+            latestReviews.set(review.user.login, review);
+          }
+          const candidateApprovals = [...latestReviews.values()].filter(r =>
+            r.state === 'APPROVED' &&
+            r.commit_id === headSha &&
+            r.user &&
+            r.user.type === 'User' &&
+            r.user.login !== prAuthor
+          );
+
+          if (candidateApprovals.length === 0) {
+            core.setFailed(
+              `PR author ${prAuthor} is not a codeowner, and the PR has no ` +
+              `codeowner approval at HEAD ${headSha}. A member of one of ` +
+              `[${[...teamSlugs].map(t => `@${org}/${t}`).join(', ')}] must ` +
+              `submit an APPROVE review on the current commit.`
+            );
+            return;
+          }
+
+          for (const approval of candidateApprovals) {
+            const membership = await isActiveTeamMember(approval.user.login);
+            if (membership) {
+              core.info(
+                `PR approved by codeowner ${approval.user.login} ` +
+                `(team=@${org}/${membership.teamSlug}) at ${headSha} — authorized.`
+              );
+              return;
+            }
+          }
+
+          core.setFailed(
+            `PR author ${prAuthor} is not a codeowner. The PR has approvals at ` +
+            `HEAD ${headSha} from [${candidateApprovals.map(a => a.user.login).join(', ')}], ` +
+            `but none of them are members of a codeowner team ` +
+            `[${[...teamSlugs].map(t => `@${org}/${t}`).join(', ')}].`
+          );
