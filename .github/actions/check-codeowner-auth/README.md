@@ -34,8 +34,8 @@ Downstream (privileged) jobs MUST:
 
 | Output | Description |
 |:--|:--|
-| `head-sha` | The vetted PR head commit SHA. Downstream `actions/checkout` MUST pin to this value. Set on every run that has a PR in the event payload (both authorized and denied). |
-| `outcome` | Machine-readable authorization result: `authorized_trusted_bot`, `authorized_author`, `authorized_approval`, `denied_unsupported_event`, `denied_missing_pr`, `denied_missing_codeowners`, `denied_no_team_codeowners`, `denied_no_approval`. |
+| `head-sha` | The vetted PR head commit SHA. Downstream `actions/checkout` MUST pin to this value. Set on every run with a valid PR payload (both authorized and denied). Absent for the three pre-extraction failure modes: `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`. |
+| `outcome` | Machine-readable authorization result: `authorized_trusted_bot`, `authorized_author`, `authorized_approval`, `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`, `denied_missing_codeowners`, `denied_no_team_codeowners`, `denied_no_approval`, `denied_api_error`. |
 
 ## Recommended workflow pattern
 

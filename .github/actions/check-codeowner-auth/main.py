@@ -23,17 +23,48 @@ from src import _actions
 from src.authorize import Outcome, authorize
 
 
-def _load_event_payload() -> dict:
-    """Load the workflow event payload from ``$GITHUB_EVENT_PATH``."""
+def _load_event_payload() -> dict | None:
+    """Load the workflow event payload from ``$GITHUB_EVENT_PATH``.
+
+    Returns the parsed payload as a dict, or ``None`` on any I/O or shape
+    error. ``None`` is the "we already called ``set_failed``" signal —
+    callers should short-circuit rather than reinterpret the value.
+
+    Distinguishes several failure modes so the caller sees a specific
+    ``::error::`` annotation in the workflow run summary rather than a
+    silent exit-1:
+
+    - ``GITHUB_EVENT_PATH`` unset: runner environment misconfigured.
+    - File unreadable or not valid UTF-8 JSON: filesystem or shape.
+    - Parsed value is not a JSON object: e.g. ``null``, ``[]``, ``"str"``,
+      ``0``. Downstream code assumes ``event_payload.get("pull_request")``
+      works; a list would raise ``AttributeError`` in ``authorize``.
+    - Parsed object is empty (``{}``): legitimate JSON, but there's no
+      event to authorize. Fail explicitly so the maintainer sees WHY the
+      step failed, not just that it failed.
+    """
     path = os.environ.get("GITHUB_EVENT_PATH")
     if not path:
         _actions.set_failed("GITHUB_EVENT_PATH is not set.")
-        return {}
+        return None
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as e:
         _actions.set_failed(f"Could not read event payload from {path!r}: {e}")
-        return {}
+        return None
+    if not isinstance(payload, dict):
+        _actions.set_failed(
+            f"Event payload at {path!r} is a {type(payload).__name__}, "
+            "not a JSON object. Cannot proceed."
+        )
+        return None
+    if not payload:
+        _actions.set_failed(
+            f"Event payload at {path!r} is an empty JSON object. "
+            "This action requires a pull_request_target or pull_request_review event."
+        )
+        return None
+    return payload
 
 
 async def _run() -> Outcome | None:
@@ -63,7 +94,10 @@ async def _run() -> Outcome | None:
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     trusted_bot_ids_raw = os.environ.get("INPUT_TRUSTED_BOT_IDS", "")
     event_payload = _load_event_payload()
-    if not event_payload:
+    if event_payload is None:
+        # ``_load_event_payload`` already called ``set_failed`` with a
+        # specific diagnostic. Bail with the same convention as the
+        # token-missing branch above.
         return None
 
     async with GitHub(token) as gh:

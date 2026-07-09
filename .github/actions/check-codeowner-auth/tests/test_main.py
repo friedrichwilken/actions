@@ -146,5 +146,114 @@ class TestMainExitCodeMapping:
         assert main.main() != 0
 
 
+class TestLoadEventPayload:
+    """Verify ``_load_event_payload`` fails loudly (not silently) on every
+    input shape that can't produce a valid workflow event dict."""
+
+    def test_missing_env_path_calls_set_failed(
+        self, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+        from main import _load_event_payload
+
+        assert _load_event_payload() is None
+        out = capfd.readouterr().out
+        assert "::error::" in out
+        assert "GITHUB_EVENT_PATH" in out
+
+    def test_unreadable_file_calls_set_failed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        # Point at a path that doesn't exist.
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(tmp_path / "does-not-exist.json"))
+        from main import _load_event_payload
+
+        assert _load_event_payload() is None
+        out = capfd.readouterr().out
+        assert "::error::" in out
+        assert "Could not read event payload" in out
+
+    def test_invalid_json_calls_set_failed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        p = tmp_path / "event.json"
+        p.write_text("this is not JSON")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(p))
+        from main import _load_event_payload
+
+        assert _load_event_payload() is None
+        out = capfd.readouterr().out
+        assert "::error::" in out
+
+    @pytest.mark.parametrize(
+        "non_dict_json",
+        [
+            "null",
+            "[]",
+            "[1, 2, 3]",
+            '"a string"',
+            "42",
+            "true",
+        ],
+    )
+    def test_non_dict_json_calls_set_failed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        tmp_path: Path,
+        non_dict_json: str,
+    ) -> None:
+        # Legal JSON but not a JSON object. Downstream code assumes
+        # ``event_payload.get("pull_request")`` works; a list would raise
+        # AttributeError. Catch the shape mismatch here with a clear message.
+        p = tmp_path / "event.json"
+        p.write_text(non_dict_json)
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(p))
+        from main import _load_event_payload
+
+        assert _load_event_payload() is None
+        out = capfd.readouterr().out
+        assert "::error::" in out
+        assert "not a JSON object" in out
+
+    def test_empty_object_calls_set_failed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        tmp_path: Path,
+    ) -> None:
+        # Regression from the PR-A review: a legitimate empty ``{}`` payload
+        # used to make ``_run`` bail on ``not event_payload`` WITHOUT
+        # calling ``set_failed``. The process would exit 1 with no
+        # ``::error::`` annotation and the maintainer would see a red step
+        # with no message. Now: explicit failure with a diagnostic.
+        p = tmp_path / "event.json"
+        p.write_text("{}")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(p))
+        from main import _load_event_payload
+
+        assert _load_event_payload() is None
+        out = capfd.readouterr().out
+        assert "::error::" in out
+        assert "empty" in out.lower()
+
+    def test_valid_dict_returns_the_dict(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        p = tmp_path / "event.json"
+        p.write_text('{"pull_request": {"number": 1}}')
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(p))
+        from main import _load_event_payload
+
+        result = _load_event_payload()
+        assert result == {"pull_request": {"number": 1}}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
