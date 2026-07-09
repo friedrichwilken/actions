@@ -152,6 +152,7 @@ async def authorize(
     event_name: str,
     event_payload: dict[str, Any],
     trusted_bot_ids_raw: str,
+    allow_individual_owners: bool = False,
 ) -> Outcome:
     """Run the authorization gate for a single event.
 
@@ -161,6 +162,12 @@ async def authorize(
         event_name: ``$GITHUB_EVENT_NAME`` value.
         event_payload: Parsed contents of ``$GITHUB_EVENT_PATH``.
         trusted_bot_ids_raw: Comma-separated numeric user IDs of always-authorized bots.
+        allow_individual_owners: TEMPORARY bridge flag. When True, individual
+            ``@handle`` entries in CODEOWNERS also authorize (author or
+            approver login matched directly, no teams API call). Default False
+            keeps the permanent teams-only posture. Exists so the action can
+            run in a context without org teams (e.g. a personal account)
+            before it moves to its org home; remove once teams are available.
 
     Returns:
         An ``Outcome``. Callers translate this into GHA outputs and exit
@@ -216,7 +223,7 @@ async def authorize(
     # failure produces a clean ``DENIED_API_ERROR`` with ``head_sha``
     # populated for downstream pinning.
     try:
-        return await _authorize_with_api(gh, ctx)
+        return await _authorize_with_api(gh, ctx, allow_individual_owners)
     except RequestFailed as e:
         status = e.response.status_code
         return Outcome(
@@ -244,11 +251,17 @@ async def authorize(
         )
 
 
-async def _authorize_with_api(gh: GitHub, ctx: _PRContext) -> Outcome:
+async def _authorize_with_api(
+    gh: GitHub, ctx: _PRContext, allow_individual_owners: bool = False
+) -> Outcome:
     """Run the network-touching authorization stages against ``ctx``.
 
     Split out so the caller can wrap the whole thing in one try/except
     without cluttering the orchestrator with error-handling per call.
+
+    ``allow_individual_owners`` is the temporary bridge flag documented on
+    ``authorize``. When True, individual ``@handle`` CODEOWNERS entries also
+    authorize; when False (default) only team membership counts.
     """
     # ── Fetch CODEOWNERS from base ref ──────────────────────────────
     codeowners_file = await gh_api.fetch_codeowners(
@@ -267,30 +280,61 @@ async def _authorize_with_api(gh: GitHub, ctx: _PRContext) -> Outcome:
 
     # ── Parse CODEOWNERS ────────────────────────────────────────────
     parsed = codeowners.parse(codeowners_file.content, ctx.org)
-    if not parsed.team_slugs:
+
+    # Individual @handle logins are only consulted under the temporary
+    # bridge flag. Normalize to lowercase bare logins (GitHub logins are
+    # case-insensitive; the parser stores them with the leading '@').
+    individual_logins: set[str] = set()
+    if allow_individual_owners:
+        individual_logins = {h.lstrip("@").lower() for h in parsed.individuals}
+
+    if not parsed.team_slugs and not individual_logins:
         skipped_detail = _describe_skipped(parsed)
+        # Message stays team-focused (the permanent requirement); mention the
+        # individual-bridge possibility only when the flag is on, so an org
+        # consumer isn't nudged toward the temporary escape hatch.
+        hint = (
+            "This action requires at least one team-scoped codeowner in the same org."
+            if not allow_individual_owners
+            else (
+                "With allow-individual-owners enabled, at least one @org/team OR "
+                "individual @handle codeowner is required."
+            )
+        )
         return Outcome(
             kind=OutcomeKind.DENIED_NO_TEAM_CODEOWNERS,
             message=(
                 f"CODEOWNERS at {codeowners_file.path}@{ctx.base_ref} has no "
                 f"@{ctx.org}/<team> entries. "
                 f"{skipped_detail}"
-                "This action requires at least one team-scoped codeowner in the same org."
+                f"{hint}"
             ),
             head_sha=ctx.head_sha,
         )
 
-    # ── Author membership check ─────────────────────────────────────
-    author_membership = await gh_api.find_active_team_membership(
-        gh, org=ctx.org, username=ctx.author_login, team_slugs=parsed.team_slugs
-    )
-    if author_membership is not None:
+    # ── Author check ────────────────────────────────────────────────
+    if parsed.team_slugs:
+        author_membership = await gh_api.find_active_team_membership(
+            gh, org=ctx.org, username=ctx.author_login, team_slugs=parsed.team_slugs
+        )
+        if author_membership is not None:
+            return Outcome(
+                kind=OutcomeKind.AUTHORIZED_AUTHOR,
+                message=(
+                    f"PR author {ctx.author_login!r} is an active member of "
+                    f"@{ctx.org}/{author_membership.team_slug} "
+                    f"(role={author_membership.role})."
+                ),
+                head_sha=ctx.head_sha,
+            )
+
+    # Temporary bridge: author listed directly as an individual codeowner.
+    if allow_individual_owners and ctx.author_login.lower() in individual_logins:
         return Outcome(
             kind=OutcomeKind.AUTHORIZED_AUTHOR,
             message=(
-                f"PR author {ctx.author_login!r} is an active member of "
-                f"@{ctx.org}/{author_membership.team_slug} "
-                f"(role={author_membership.role})."
+                f"PR author {ctx.author_login!r} is an individual codeowner "
+                f"(matched via allow-individual-owners, not a team)."
             ),
             head_sha=ctx.head_sha,
         )
@@ -301,27 +345,41 @@ async def _authorize_with_api(gh: GitHub, ctx: _PRContext) -> Outcome:
     )
     candidates = valid_approvals_at_head(all_reviews, ctx.head_sha, ctx.author_login)
     for approval in candidates:
-        membership = await gh_api.find_active_team_membership(
-            gh, org=ctx.org, username=approval.reviewer_login, team_slugs=parsed.team_slugs
-        )
-        if membership is not None:
+        if parsed.team_slugs:
+            membership = await gh_api.find_active_team_membership(
+                gh, org=ctx.org, username=approval.reviewer_login, team_slugs=parsed.team_slugs
+            )
+            if membership is not None:
+                return Outcome(
+                    kind=OutcomeKind.AUTHORIZED_APPROVAL,
+                    message=(
+                        f"PR approved by codeowner {approval.reviewer_login!r} "
+                        f"(team=@{ctx.org}/{membership.team_slug}) at {ctx.head_sha}."
+                    ),
+                    head_sha=ctx.head_sha,
+                )
+        # Temporary bridge: approver listed directly as an individual codeowner.
+        # Runs after valid_approvals_at_head, so the approver has already
+        # passed the bot / self-approval / stale-SHA / latest-review filters.
+        if allow_individual_owners and approval.reviewer_login.lower() in individual_logins:
             return Outcome(
                 kind=OutcomeKind.AUTHORIZED_APPROVAL,
                 message=(
-                    f"PR approved by codeowner {approval.reviewer_login!r} "
-                    f"(team=@{ctx.org}/{membership.team_slug}) at {ctx.head_sha}."
+                    f"PR approved by individual codeowner {approval.reviewer_login!r} "
+                    f"at {ctx.head_sha} (matched via allow-individual-owners, not a team)."
                 ),
                 head_sha=ctx.head_sha,
             )
 
     approver_summary = ", ".join(a.reviewer_login for a in candidates) if candidates else "(none)"
-    teams_summary = ", ".join(f"@{ctx.org}/{t}" for t in parsed.team_slugs)
+    teams_summary = ", ".join(f"@{ctx.org}/{t}" for t in parsed.team_slugs) or "(none)"
     return Outcome(
         kind=OutcomeKind.DENIED_NO_APPROVAL,
         message=(
             f"PR author {ctx.author_login!r} is not a codeowner. "
             f"Approvals at HEAD {ctx.head_sha} came from: {approver_summary}. "
-            f"None of them are active members of a codeowner team [{teams_summary}]. "
+            f"None of them are active members of a codeowner team [{teams_summary}]"
+            f"{' or listed individual codeowners' if allow_individual_owners else ''}. "
             "A codeowner must submit an APPROVE review on the current commit."
         ),
         head_sha=ctx.head_sha,
