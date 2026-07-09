@@ -89,33 +89,52 @@ class TestSectionHeaders:
         # ``hangelog.md @acme/docs-team`` as a section header with a default
         # owner — silently granting ``docs-team`` whole-repo authorization
         # when the maintainer intended file-scoped ownership.
+        #
+        # NOTE: this input alone doesn't distinguish pre-fix from post-fix
+        # (both parsers end up with ``('docs-team',)`` for coincidental
+        # reasons — see ``test_glob_wedge_case`` below for the actual
+        # behavioral wedge that pins the fix).
         r = parse("[Cc]hangelog.md @acme/docs-team\n", "acme")
-        # The team on this line owns ONLY the file pattern (the glob), so
-        # it IS captured — but as an owner of a specific path, not as a
-        # section default. Our current representation is a flat set of
-        # team slugs (path scoping is a future enhancement), so this
-        # particular file DOES end up with ``docs-team`` captured. What we
-        # verify here is that the parser recognises ``[Cc]hangelog.md`` as
-        # a pattern (i.e. tokens[0] is the pattern, tokens[1:] are owners)
-        # rather than a header — behaviour that differs measurably from
-        # the pre-fix code path when combined with additional lines.
         assert r.team_slugs == ("docs-team",)
 
+    def test_glob_wedge_case_pins_the_fix(self) -> None:
+        # THIS is the test that fails on the buggy regex and passes on the
+        # fixed one — the input where pre-fix and post-fix diverge.
+        #
+        # Input: ``[Cc]@acme/evil @acme/docs-team``
+        #
+        # Pre-fix regex ``^\s*\^?\[[^\]]+\]\s*`` matches ``[Cc]`` and strips
+        # it. The parser then enters section-body mode, splits the remainder
+        # into two owner tokens ``@acme/evil`` and ``@acme/docs-team``, and
+        # captures BOTH → team_slugs == ('evil', 'docs-team'). The
+        # attacker-controlled ``evil`` team is granted whole-repo
+        # authorization on any repo whose CODEOWNERS accidentally contains
+        # a leading glob character class.
+        #
+        # Post-fix regex ``^\s*\^?\[[^\]]+\](?=\s|$)`` does NOT match ``[Cc]``
+        # because the ``]`` is not followed by whitespace-or-EOL. The parser
+        # enters pattern-body mode, treating ``[Cc]@acme/evil`` as the file
+        # pattern and ``@acme/docs-team`` as the sole owner → team_slugs ==
+        # ('docs-team',).
+        #
+        # A future revert of the regex would flip this test red immediately.
+        r = parse("[Cc]@acme/evil @acme/docs-team\n", "acme")
+        assert r.team_slugs == ("docs-team",)
+        assert "evil" not in r.team_slugs
+
     def test_glob_character_class_with_multiple_lines(self) -> None:
-        # More probative form of the previous test: with an entry BEFORE the
-        # glob line, the buggy pre-fix parser would happily emit both teams;
-        # the fix keeps the semantics the same but for the RIGHT reason
-        # (glob pattern parsed correctly, not header-stripping accident).
+        # Broader realistic form. Same caveat as the first glob test — this
+        # input doesn't distinguish the two parsers; both would emit both
+        # teams. Kept for coverage of the multi-line path, not as a
+        # regression pin. The wedge test above is what pins the fix.
         text = "docs/ @acme/docs-team\n[Cc]hangelog.md @acme/changelog-team\n"
         r = parse(text, "acme")
         assert set(r.team_slugs) == {"docs-team", "changelog-team"}
 
     def test_glob_with_only_glob_line_no_teams(self) -> None:
-        # Diagnostic case: a bare glob line with no team owner must not
-        # spuriously capture teams. Pre-fix, ``[Cc]hangelog.md`` alone
-        # would strip and become the empty header, contributing nothing —
-        # accidentally correct here. Post-fix, the pattern is parsed as a
-        # pattern with no owners — deliberately correct.
+        # Bare glob line with no team owner. Pre-fix and post-fix both emit
+        # ``()`` here for different reasons — not a wedge, kept purely to
+        # document that a pattern-only line contributes no teams.
         r = parse("[Cc]hangelog.md\n", "acme")
         assert r.team_slugs == ()
 
