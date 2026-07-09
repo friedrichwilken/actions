@@ -38,11 +38,20 @@ def _load_event_payload() -> dict:
 
 async def _run() -> Outcome | None:
     """Do the work. Returns ``None`` iff an unrecoverable I/O error occurred."""
-    token = os.environ.get("INPUT_GITHUB_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    # Read the caller-provided input verbatim. Do NOT fall back to the
+    # runner's built-in GITHUB_TOKEN — it lacks the `read:org` scope we need
+    # for team membership checks, so every membership call would 404 and
+    # every legitimate codeowner PR would deny as DENIED_NO_APPROVAL with
+    # no hint that the token is wrong. Composite `required: true` inputs
+    # accept the empty string when a caller passes an unset secret, so we
+    # have to reject empty ourselves.
+    token = os.environ.get("INPUT_GITHUB_TOKEN", "").strip()
     if not token:
         _actions.set_failed(
             "No GitHub token provided. Pass an installation token via the "
-            "`github-token` input (from actions/create-github-app-token)."
+            "`github-token` input (typically minted with "
+            "`actions/create-github-app-token`). Do NOT pass the runner's "
+            "built-in `GITHUB_TOKEN` — it lacks the `read:org` scope."
         )
         return None
 

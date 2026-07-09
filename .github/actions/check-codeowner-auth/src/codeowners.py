@@ -26,7 +26,16 @@ from dataclasses import dataclass, field
 # whitespace) is a section header, not a file pattern. GitHub introduced
 # section syntax in 2022 for CODEOWNERS files that live in
 # ``.github/CODEOWNERS`` and are used with branch protection.
-_SECTION_HEADER = re.compile(r"^\s*\^?\[[^\]]+\]\s*")
+#
+# The trailing lookahead requires the closing ``]`` to be followed by
+# whitespace or end-of-line, so a glob character class like
+# ``[Cc]hangelog.md`` (which starts with ``[Cc]`` immediately followed by
+# ``hangelog.md``, no whitespace between) is NOT mistaken for a header.
+# Without this lookahead, ``[Cc]hangelog.md @acme/docs-team`` would strip
+# the ``[Cc]`` prefix and then parse ``hangelog.md @acme/docs-team`` as a
+# section header with a default owner — silently granting the team
+# whole-repo authorization.
+_SECTION_HEADER = re.compile(r"^\s*\^?\[[^\]]+\](?=\s|$)")
 
 # A team owner: @<org>/<team-slug>. Slugs are lowercase alphanumerics and
 # hyphens; we don't validate slug format here — GitHub's own parser is more

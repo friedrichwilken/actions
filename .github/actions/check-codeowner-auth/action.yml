@@ -56,7 +56,11 @@ runs:
 
     - name: Install dependencies
       shell: bash
-      run: pip install --require-hashes -r "${{ github.action_path }}/requirements.txt" || pip install -r "${{ github.action_path }}/requirements.txt"
+      # Note: hash pinning via `pip-compile --generate-hashes` is a future
+      # hardening step. When we add hashes to requirements.txt, switch this
+      # to `pip install --require-hashes -r ...` with no OR-fallback — the
+      # fallback is what makes hash pinning inert.
+      run: pip install -r "${{ github.action_path }}/requirements.txt"
 
     - name: Authorize
       id: authorize

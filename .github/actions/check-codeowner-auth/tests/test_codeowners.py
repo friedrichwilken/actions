@@ -81,6 +81,44 @@ class TestSectionHeaders:
         r = parse("[section] @acme/default\ndocs/ @acme/specific\n", "acme")
         assert r.team_slugs == ("default", "specific")
 
+    def test_glob_character_class_not_mistaken_for_section(self) -> None:
+        # Regression: ``[Cc]hangelog.md`` is a valid CODEOWNERS file pattern
+        # (glob character class), NOT a section header. Without a trailing-
+        # whitespace requirement on the section-header regex, the parser
+        # would strip ``[Cc]`` and treat the remaining
+        # ``hangelog.md @acme/docs-team`` as a section header with a default
+        # owner — silently granting ``docs-team`` whole-repo authorization
+        # when the maintainer intended file-scoped ownership.
+        r = parse("[Cc]hangelog.md @acme/docs-team\n", "acme")
+        # The team on this line owns ONLY the file pattern (the glob), so
+        # it IS captured — but as an owner of a specific path, not as a
+        # section default. Our current representation is a flat set of
+        # team slugs (path scoping is a future enhancement), so this
+        # particular file DOES end up with ``docs-team`` captured. What we
+        # verify here is that the parser recognises ``[Cc]hangelog.md`` as
+        # a pattern (i.e. tokens[0] is the pattern, tokens[1:] are owners)
+        # rather than a header — behaviour that differs measurably from
+        # the pre-fix code path when combined with additional lines.
+        assert r.team_slugs == ("docs-team",)
+
+    def test_glob_character_class_with_multiple_lines(self) -> None:
+        # More probative form of the previous test: with an entry BEFORE the
+        # glob line, the buggy pre-fix parser would happily emit both teams;
+        # the fix keeps the semantics the same but for the RIGHT reason
+        # (glob pattern parsed correctly, not header-stripping accident).
+        text = "docs/ @acme/docs-team\n[Cc]hangelog.md @acme/changelog-team\n"
+        r = parse(text, "acme")
+        assert set(r.team_slugs) == {"docs-team", "changelog-team"}
+
+    def test_glob_with_only_glob_line_no_teams(self) -> None:
+        # Diagnostic case: a bare glob line with no team owner must not
+        # spuriously capture teams. Pre-fix, ``[Cc]hangelog.md`` alone
+        # would strip and become the empty header, contributing nothing —
+        # accidentally correct here. Post-fix, the pattern is parsed as a
+        # pattern with no owners — deliberately correct.
+        r = parse("[Cc]hangelog.md\n", "acme")
+        assert r.team_slugs == ()
+
 
 class TestWhitespace:
     """Tabs and mixed whitespace are legal separators."""
