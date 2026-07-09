@@ -37,7 +37,53 @@ Downstream (privileged) jobs MUST:
 | `head-sha` | The vetted PR head commit SHA. Downstream `actions/checkout` MUST pin to this value. Set on every run with a valid PR payload (both authorized and denied). Absent for the three pre-extraction failure modes: `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`. |
 | `outcome` | Machine-readable authorization result: `authorized_trusted_bot`, `authorized_author`, `authorized_approval`, `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`, `denied_missing_codeowners`, `denied_no_team_codeowners`, `denied_no_approval`, `denied_api_error`. |
 
-## Recommended workflow pattern
+## Recommended integration: the reusable workflow
+
+**Use the reusable workflow, not the composite action directly.** The
+reusable workflow at `kyma-project/actions/.github/workflows/authorize.yml`
+owns the entire authorize job — token minting, the gate, and token
+revocation — so a consumer cannot accidentally add a step (e.g. an
+`actions/checkout` of PR head) into the same job as the privileged token.
+It also revokes the installation token on exit so a leak is useless within
+seconds.
+
+```yaml
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  authorize:
+    uses: kyma-project/actions/.github/workflows/authorize.yml@<full-40-char-sha>
+    secrets:
+      app-private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
+    with:
+      app-id: ${{ vars.AUTH_GATE_APP_ID }}
+      # trusted-bot-ids: "29139614"   # optional
+
+  privileged-job:
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@<full-40-char-sha>
+        with:
+          ref: ${{ needs.authorize.outputs.head-sha }}   # pin to vetted SHA
+      # … privileged work …
+```
+
+## Advanced: calling the composite action directly
+
+Only do this if you have a reason the reusable workflow can't serve. When
+you call the composite action yourself, **you** are responsible for the
+trust-boundary rules in the section above — most importantly, the
+`authorize` job MUST NOT contain any step that runs PR-controlled code, and
+you should revoke the minted token on exit yourself.
 
 ```yaml
 on:
@@ -61,6 +107,7 @@ jobs:
         with:
           app-id: ${{ vars.AUTH_GATE_APP_ID }}
           private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
       - uses: kyma-project/actions/.github/actions/check-codeowner-auth@<full-40-char-sha>
         id: gate
         with:

@@ -1,0 +1,137 @@
+name: Authorize (reusable)
+
+# Reusable authorization gate for pull_request_target / pull_request_review
+# workflows. Call this instead of hand-assembling the check-codeowner-auth
+# composite action, so the authorize job's steps are defined HERE and a
+# consumer cannot inject a rogue step (e.g. a checkout of PR head) into the
+# same job as the token-minting step.
+#
+# Usage from a consumer workflow:
+#
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened]
+#     pull_request_review:
+#       types: [submitted]
+#
+#   permissions: {}
+#
+#   jobs:
+#     authorize:
+#       uses: kyma-project/actions/.github/workflows/authorize.yml@<full-sha>
+#       secrets:
+#         app-private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
+#       with:
+#         app-id: ${{ vars.AUTH_GATE_APP_ID }}
+#
+#     privileged-job:
+#       needs: authorize
+#       runs-on: ubuntu-latest
+#       permissions:
+#         contents: read
+#       steps:
+#         - uses: actions/checkout@<full-sha>
+#           with:
+#             ref: ${{ needs.authorize.outputs.head-sha }}   # vetted SHA
+#         # … privileged work …
+
+on:
+  workflow_call:
+    inputs:
+      app-id:
+        description: >-
+          GitHub App ID of the auth-gate App (an org variable, not a secret).
+          The App needs Organization -> Members: Read and
+          Repository -> Contents: Read, installed on this repository.
+        required: true
+        type: string
+      trusted-bot-ids:
+        description: >-
+          Optional comma-separated numeric GitHub user IDs of bots always
+          authorized as PR authors. Numeric IDs, not logins.
+        required: false
+        type: string
+        default: ''
+    secrets:
+      app-private-key:
+        description: Private key (PEM) of the auth-gate GitHub App.
+        required: true
+    outputs:
+      head-sha:
+        description: >-
+          The vetted PR head commit SHA. Downstream jobs MUST pin
+          actions/checkout to this value — never github.head_ref or
+          refs/pull/N/merge.
+        value: ${{ jobs.authorize.outputs.head-sha }}
+      outcome:
+        description: Machine-readable authorization result. See the action README.
+        value: ${{ jobs.authorize.outputs.outcome }}
+
+# Default to no permissions. The job below re-adds only contents:read.
+permissions: {}
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      head-sha: ${{ steps.gate.outputs.head-sha }}
+      outcome: ${{ steps.gate.outputs.outcome }}
+    steps:
+      # Mint a short-lived installation token from the App. This is the
+      # ONLY place the token exists; it is not passed to any downstream job.
+      - name: Mint app token
+        id: app-token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1.12.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.app-private-key }}
+          # The token needs org-level Members: Read, which is not a
+          # repository-scoped permission. Request owner-level access so the
+          # token can call the teams API.
+          owner: ${{ github.repository_owner }}
+
+      # Run the gate. No checkout precedes this — the composite action reads
+      # everything it needs (CODEOWNERS, team membership, reviews) via the
+      # API using the minted token. Adding a checkout here would defeat the
+      # trust boundary, which is exactly why this job lives in a reusable
+      # workflow the consumer cannot edit.
+      - name: Check codeowner authorization
+        id: gate
+        # NOTE (supply-chain): this references the composite action by the
+        # floating ``@main`` ref. Even when a consumer pins THIS reusable
+        # workflow to a full SHA, an absolute same-org ``@main`` reference
+        # resolves to main's current HEAD, not to the caller's pinned commit.
+        # That is an accepted, documented limitation for now:
+        #   - The blast radius is bounded: the composite action can only
+        #     read (Members: Read, Contents: Read) — it cannot write, merge,
+        #     or exfiltrate beyond org-structure recon.
+        #   - The `kyma-project/actions` main branch is itself protected
+        #     (2 reviews, no admin bypass, signed commits) so a malicious
+        #     change to the action can't land unreviewed.
+        # FOLLOW-UP: once we cut versioned release tags, pin this to the same
+        # release SHA the reusable workflow is tagged at, and document that
+        # consumers should pin both to that tag/SHA.
+        uses: kyma-project/actions/.github/actions/check-codeowner-auth@main
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          trusted-bot-ids: ${{ inputs.trusted-bot-ids }}
+
+      # Revoke the installation token immediately, whether the gate passed
+      # or failed. Installation tokens otherwise live for up to an hour; a
+      # leaked token (from a crash log, a compromised transitive dep, etc.)
+      # is useless within seconds of this step. DELETE /installation/token
+      # revokes the token used to authenticate the call — i.e. itself.
+      - name: Revoke app token
+        if: always() && steps.app-token.outputs.token != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          curl --silent --show-error --fail \
+            --request DELETE \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            https://api.github.com/installation/token \
+          || echo "::warning::Failed to revoke installation token; it will expire on its own within ~1h."
