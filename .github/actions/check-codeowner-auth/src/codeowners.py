@@ -7,7 +7,7 @@ handles, email addresses, and teams from other orgs are recorded as
 requires team entries in the same org as the repository.
 
 CODEOWNERS syntax reference:
-<https://docs.github.com/en/repositories/managing-your-repositories-settings-and-features/customizing-your-repository/about-code-owners>
+<https://docs.github.com/articles/about-code-owners>
 
 Notable syntax handled here:
 - Full-line comments: ``# comment``
