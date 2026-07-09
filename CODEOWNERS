@@ -1,6 +1,7 @@
-# CODEOWNERS for kyma-project/actions
+# CODEOWNERS for friedrichwilken/actions
 #
-# For now, all changes reviewed by @kyma-project/security-management.
-# Revisit once the repo has more actions and more consumers.
+# Staged on a personal account for now, so the owner is the account owner.
+# When this repo moves to its permanent org home, switch this to the owning
+# team (e.g. @<org>/<security-team>).
 
-* @kyma-project/security-management
+* @friedrichwilken

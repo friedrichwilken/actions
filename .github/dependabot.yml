@@ -8,7 +8,7 @@
 # NOTE: Dependabot updates third-party action pins (actions/checkout,
 # actions/setup-python, actions/create-github-app-token). It does NOT bump
 # the self-referential pin in authorize.yml
-# (kyma-project/actions/.github/actions/check-codeowner-auth@<sha>) — a
+# (friedrichwilken/actions/.github/actions/check-codeowner-auth@<sha>) — a
 # repo can't Dependabot-update a reference to itself. Bump that pin
 # manually in the same PR that changes the composite action.
 version: 2

@@ -18,7 +18,7 @@ name: Authorize (reusable)
 #
 #   jobs:
 #     authorize:
-#       uses: kyma-project/actions/.github/workflows/authorize.yml@<full-sha>
+#       uses: friedrichwilken/actions/.github/workflows/authorize.yml@<full-sha>
 #       secrets:
 #         app-private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
 #       with:
@@ -110,7 +110,7 @@ jobs:
         # Keep this pin current with Dependabot (or a manual bump in the
         # same PR that changes the action). When we cut versioned release
         # tags, this can move to the release SHA.
-        uses: kyma-project/actions/.github/actions/check-codeowner-auth@bf2b6f0f4a47bbd9bfa8d4d43f3f3845c7e71675  # main @ 2026-07-09
+        uses: friedrichwilken/actions/.github/actions/check-codeowner-auth@2c1748b8becf845103239b7d1cc3fb74baf8dda4  # main @ 2026-07-09
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           trusted-bot-ids: ${{ inputs.trusted-bot-ids }}
