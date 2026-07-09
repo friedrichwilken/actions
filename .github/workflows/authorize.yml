@@ -99,21 +99,18 @@ jobs:
       # workflow the consumer cannot edit.
       - name: Check codeowner authorization
         id: gate
-        # NOTE (supply-chain): this references the composite action by the
-        # floating ``@main`` ref. Even when a consumer pins THIS reusable
-        # workflow to a full SHA, an absolute same-org ``@main`` reference
-        # resolves to main's current HEAD, not to the caller's pinned commit.
-        # That is an accepted, documented limitation for now:
-        #   - The blast radius is bounded: the composite action can only
-        #     read (Members: Read, Contents: Read) — it cannot write, merge,
-        #     or exfiltrate beyond org-structure recon.
-        #   - The `kyma-project/actions` main branch is itself protected
-        #     (2 reviews, no admin bypass, signed commits) so a malicious
-        #     change to the action can't land unreviewed.
-        # FOLLOW-UP: once we cut versioned release tags, pin this to the same
-        # release SHA the reusable workflow is tagged at, and document that
-        # consumers should pin both to that tag/SHA.
-        uses: kyma-project/actions/.github/actions/check-codeowner-auth@main
+        # SHA-pinned to an immutable commit of the composite action, NOT a
+        # floating ``@main`` ref. An absolute same-org ``@main`` reference
+        # resolves to main's current HEAD even when a consumer pins THIS
+        # reusable workflow to a SHA — so a malicious or accidental change
+        # to the action on main would silently reach every consumer. Pinning
+        # to a commit SHA closes that channel: an action update is a
+        # reviewed, explicit bump of this line.
+        #
+        # Keep this pin current with Dependabot (or a manual bump in the
+        # same PR that changes the action). When we cut versioned release
+        # tags, this can move to the release SHA.
+        uses: kyma-project/actions/.github/actions/check-codeowner-auth@bf2b6f0f4a47bbd9bfa8d4d43f3f3845c7e71675  # main @ 2026-07-09
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           trusted-bot-ids: ${{ inputs.trusted-bot-ids }}
