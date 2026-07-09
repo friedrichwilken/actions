@@ -174,6 +174,29 @@ class TestEventGate:
             )
         assert outcome.kind == OutcomeKind.DENIED_UNSUPPORTED_EVENT
 
+    async def test_pull_request_review_event_accepted(self, respx_mock: respx.MockRouter) -> None:
+        # ``pull_request_review`` is one of only two supported events; the
+        # end-to-end flow must be identical to ``pull_request_target`` because
+        # the same authorization logic applies (the review event's role is to
+        # re-trigger the gate now that an approval landed). This test proves
+        # the wiring — a future change that adds review-event-specific logic
+        # will need to update or extend it explicitly.
+        _, payload = make_event(event_name="pull_request_review", author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @acme/team-a\n")
+        )
+        respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
+            return_value=_membership_active("team-a")
+        )
+        async with GitHub("fake-token") as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_review",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
+
     async def test_missing_pr_denied(self) -> None:
         async with GitHub("fake-token") as gh:
             outcome = await authorize(
