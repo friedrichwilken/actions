@@ -1,0 +1,7 @@
+# Runtime dependencies for check-codeowner-auth.
+#
+# Kept minimal on purpose: this action is a security gate. Every dependency
+# is a supply-chain surface. Pin exact versions; consider adding hash pinning
+# via `pip-compile --generate-hashes` when we've stabilized.
+
+githubkit==0.13.4

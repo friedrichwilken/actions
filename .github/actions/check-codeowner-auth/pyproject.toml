@@ -1,0 +1,39 @@
+[project]
+name = "check-codeowner-auth"
+version = "0.1.0"
+description = "Composite action authorizing pull_request_target workflows via CODEOWNERS."
+requires-python = ">=3.14"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+filterwarnings = [
+    # pytest-asyncio internals use asyncio APIs that Python 3.16 will remove.
+    # Not our code — silence to keep test output readable.
+    "ignore:'asyncio\\.iscoroutinefunction' is deprecated:DeprecationWarning",
+    "ignore:'asyncio\\.get_event_loop_policy' is deprecated:DeprecationWarning",
+    "ignore:'asyncio\\.set_event_loop_policy' is deprecated:DeprecationWarning",
+    # githubkit's legacy pagination — we're already using the new .rest.paginate.
+    # This warning fires from within httpx/pydantic internals, not our code.
+    "ignore:Legacy pagination:DeprecationWarning",
+]
