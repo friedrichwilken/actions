@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 from dataclasses import dataclass
+from datetime import datetime
 
 from githubkit import GitHub
 from githubkit.exception import RequestFailed
@@ -165,12 +166,19 @@ async def list_pr_reviews(
             # authorization anyway — a login of ``None`` won't match any
             # team membership check.
             continue
+        submitted_at = getattr(review, "submitted_at", None)
+        # githubkit types ``submitted_at`` as ``Literal[UNSET] | datetime | None``.
+        # Normalize UNSET and any non-datetime falsy value to None so the
+        # sort key can rely on ``datetime | None``.
+        if not isinstance(submitted_at, datetime):
+            submitted_at = None
         reviews.append(
             Review(
                 reviewer_login=getattr(user, "login", ""),
                 reviewer_type=getattr(user, "type", ""),
                 state=getattr(review, "state", ""),
                 commit_id=getattr(review, "commit_id", "") or "",
+                submitted_at=submitted_at,
             )
         )
     return reviews
