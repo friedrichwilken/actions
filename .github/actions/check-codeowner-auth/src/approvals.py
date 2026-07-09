@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 @dataclass(frozen=True)
@@ -99,18 +99,23 @@ def valid_approvals_at_head(
 
 
 # Anchor for reviews with ``submitted_at is None``. ``datetime.min`` sorts
-# before every real timestamp; we use a tz-aware ``UTC`` anchor because
-# real GitHub timestamps are tz-aware and Python refuses to compare naive
-# and aware datetimes.
+# before every real timestamp. This anchor is deliberately NAIVE (no
+# tzinfo) to match the naive-normalized real timestamps produced by
+# ``_sort_key`` — mixing a tz-aware anchor with naive keys would raise
+# "can't compare offset-naive and offset-aware datetimes". Do NOT add a
+# tzinfo here.
 _MIN_TIMESTAMP = datetime.min.replace(tzinfo=None)
 
 
 def _sort_key(r: Review) -> datetime:
     if r.submitted_at is None:
         return _MIN_TIMESTAMP
-    # Normalize to naive UTC for comparison so tz-aware and tz-naive
-    # datetimes never mix in the sort key.
     ts = r.submitted_at
     if ts.tzinfo is not None:
-        ts = ts.replace(tzinfo=None)
+        # Convert to the true UTC instant, then drop tzinfo, so the sort
+        # key is naive-but-correct. Stripping tzinfo without converting
+        # would order by wall-clock time and misorder a non-UTC timestamp
+        # (GitHub always returns UTC 'Z', but a hand-crafted event or a
+        # future githubkit change could carry an offset).
+        ts = ts.astimezone(UTC).replace(tzinfo=None)
     return ts

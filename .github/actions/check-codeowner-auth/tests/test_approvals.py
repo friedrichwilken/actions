@@ -8,6 +8,12 @@ import pytest
 
 from src.approvals import Review, valid_approvals_at_head
 
+# Sentinel distinguishing "caller didn't specify submitted_at" (use the
+# default anchor) from "caller explicitly wants None" (unknown-time review).
+# Passing None directly must reach the Review as None so the None-sorts-
+# oldest path is actually exercised.
+_UNSET = object()
+
 
 def _review(
     *,
@@ -15,13 +21,13 @@ def _review(
     reviewer_type: str = "User",
     state: str = "APPROVED",
     commit_id: str = "abc123",
-    submitted_at: datetime | None = None,
+    submitted_at=_UNSET,
 ) -> Review:
-    # Default timestamp is a fixed anchor rather than None so the
-    # existing tests don't accidentally observe "unknown-time review
-    # sorts first" behavior. When a test wants to distinguish order it
-    # passes an explicit timestamp.
-    if submitted_at is None:
+    # Default (unspecified) timestamp is a fixed anchor rather than None so
+    # the many order-insensitive tests don't accidentally observe
+    # "unknown-time review sorts first" behavior. A test that wants an
+    # unknown-time review passes ``submitted_at=None`` explicitly.
+    if submitted_at is _UNSET:
         submitted_at = datetime(2026, 1, 1, tzinfo=UTC)
     return Review(
         reviewer_login=login,
@@ -167,13 +173,19 @@ class TestChronologicalSort:
 
     def test_none_submitted_at_sorts_as_oldest(self) -> None:
         # A review with no submitted_at (legacy / PENDING) must lose to a
-        # real-timestamped review from the same reviewer. Here the
-        # unknown-time review is APPROVED and the real one is
-        # CHANGES_REQUESTED — the real (later) one must win → denied.
+        # real-timestamped review from the same reviewer.
+        #
+        # Input order is deliberately [CHANGES(real), APPROVED(None)] so
+        # that a naive dict-overwrite trusting input order would keep the
+        # APPROVED(None) review last and wrongly authorize. The None-oldest
+        # sort must reorder to [APPROVED(None), CHANGES(real)] so
+        # CHANGES_REQUESTED wins → denied. (An earlier version of this test
+        # used the reverse input order, which passed even without the sort
+        # and therefore didn't actually pin the None-oldest behavior.)
         real = datetime(2026, 1, 1, tzinfo=UTC)
         reviews = [
-            _review(login="alice", state="APPROVED", submitted_at=None),
             _review(login="alice", state="CHANGES_REQUESTED", submitted_at=real),
+            _review(login="alice", state="APPROVED", submitted_at=None),
         ]
         assert valid_approvals_at_head(reviews, "abc123", "author") == ()
 
