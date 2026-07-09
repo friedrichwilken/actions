@@ -20,7 +20,7 @@ from pathlib import Path
 from githubkit import GitHub
 
 from src import _actions
-from src.authorize import Outcome, authorize
+from src.authorize import AUTHORIZED_KINDS, Outcome, authorize
 
 
 def _load_event_payload() -> dict | None:
@@ -120,7 +120,9 @@ def main() -> int:
         _actions.set_output("head-sha", outcome.head_sha)
     _actions.set_output("outcome", outcome.kind.value)
 
-    if outcome.kind.value.startswith("authorized_"):
+    # Branch on enum-set membership, NOT on string prefix. See the
+    # AUTHORIZED_KINDS docstring in authorize.py for the rationale.
+    if outcome.kind in AUTHORIZED_KINDS:
         _actions.info(outcome.message)
         return 0
 

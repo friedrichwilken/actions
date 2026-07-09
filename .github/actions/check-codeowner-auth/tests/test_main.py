@@ -255,5 +255,105 @@ class TestLoadEventPayload:
         assert result == {"pull_request": {"number": 1}}
 
 
+class TestAuthorizedDispatch:
+    """Verify authorized-vs-denied branching in ``main.main`` is driven by
+    ``AUTHORIZED_KINDS`` set membership, NOT by string-prefix inspection of
+    ``kind.value``. Prevents a future contributor from adding an authorized
+    outcome whose value doesn't happen to start with ``authorized_`` and
+    silently having it treated as a denial.
+    """
+
+    def _prime_env(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        p = tmp_path / "event.json"
+        p.write_text("{}")
+        monkeypatch.setenv("INPUT_GITHUB_TOKEN", "fake-token")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(p))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+
+    def test_all_current_authorized_kinds_return_zero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._prime_env(monkeypatch, tmp_path)
+        import main
+        from src.authorize import AUTHORIZED_KINDS, Outcome
+
+        for kind in AUTHORIZED_KINDS:
+
+            async def fake_run(k=kind) -> Outcome:
+                return Outcome(kind=k, message="ok", head_sha="sha-x")
+
+            monkeypatch.setattr(main, "_run", fake_run)
+            assert main.main() == 0, f"{kind.name} should authorize (exit 0)"
+            # Reset the module-global exit code between iterations.
+            monkeypatch.setattr(
+                "src._actions._exit_code",
+                0,
+                raising=False,
+            )
+
+    def test_all_current_denied_kinds_return_nonzero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._prime_env(monkeypatch, tmp_path)
+        import main
+        from src.authorize import AUTHORIZED_KINDS, Outcome, OutcomeKind
+
+        denied_kinds = frozenset(OutcomeKind) - AUTHORIZED_KINDS
+        assert denied_kinds, "expected at least one denied kind"
+
+        for kind in denied_kinds:
+
+            async def fake_run(k=kind) -> Outcome:
+                return Outcome(kind=k, message="denied", head_sha="sha-x")
+
+            monkeypatch.setattr(main, "_run", fake_run)
+            assert main.main() != 0, f"{kind.name} should deny (nonzero exit)"
+            # Reset counter between iterations.
+            import src._actions
+
+            src._actions._exit_code = 0  # type: ignore[attr-defined]
+
+    def test_authorized_kind_without_string_prefix_still_authorizes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # Wedge / regression pin. The pre-fix dispatch was
+        #   if outcome.kind.value.startswith("authorized_"):
+        # A hypothetical future ``bypassed_by_emergency_override`` outcome
+        # would deny under that check even if it was semantically an
+        # authorization. Prove the current implementation uses enum-set
+        # membership by injecting a value-less-prefixed authorized outcome
+        # and asserting exit 0.
+        #
+        # We can't easily add a new enum member at test time without
+        # touching production code, so we inject a fake member directly
+        # into the AUTHORIZED_KINDS set (frozenset is immutable, so we
+        # patch it to a set-with-more-members). Then wire an ``Outcome``
+        # whose ``kind`` is that fake member and assert authorization.
+        self._prime_env(monkeypatch, tmp_path)
+        import main
+        from src.authorize import AUTHORIZED_KINDS, Outcome, OutcomeKind
+
+        # Extend the frozenset for this test. Aliasing an existing DENIED
+        # kind and asserting it authorizes would also work, but this
+        # form is more legible.
+        fake_authorized = OutcomeKind.DENIED_NO_APPROVAL  # borrow an existing member
+        monkeypatch.setattr(
+            "main.AUTHORIZED_KINDS",
+            AUTHORIZED_KINDS | {fake_authorized},
+        )
+
+        async def fake_run() -> Outcome:
+            # Value 'denied_no_approval' — does NOT start with 'authorized_'.
+            return Outcome(kind=fake_authorized, message="ok", head_sha="sha-x")
+
+        monkeypatch.setattr(main, "_run", fake_run)
+
+        # Under a string-prefix check, this would return nonzero. Under
+        # enum-set membership, the patched set includes fake_authorized,
+        # so it must return 0.
+        assert main.main() == 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
