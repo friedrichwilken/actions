@@ -165,7 +165,7 @@ def _review(
 class TestEventGate:
     async def test_unsupported_event_denied(self) -> None:
         _, payload = make_event(event_name="issue_comment")
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="issue_comment",
@@ -188,7 +188,7 @@ class TestEventGate:
         respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
             return_value=_membership_active("team-a")
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_review",
@@ -198,7 +198,7 @@ class TestEventGate:
         assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
 
     async def test_missing_pr_denied(self) -> None:
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -216,7 +216,7 @@ class TestTrustedBot:
         # No routes registered → any accidental API call would raise. Prove
         # the trusted-bot path short-circuits before hitting the network.
         _, payload = make_event(author_login="renovate[bot]", author_id=29139614, author_type="Bot")
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -243,7 +243,7 @@ class TestTrustedBot:
         respx_mock.get("https://api.github.com/repos/acme/widget/contents/docs/CODEOWNERS").mock(
             return_value=_codeowners_not_found()
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -263,7 +263,7 @@ class TestCodeownersFetch:
             respx_mock.get(f"https://api.github.com/repos/acme/widget/contents/{path}").mock(
                 return_value=_codeowners_not_found()
             )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -287,7 +287,7 @@ class TestCodeownersFetch:
         respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
             return_value=_reviews_response([])
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -301,7 +301,7 @@ class TestCodeownersFetch:
         respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
             return_value=_codeowners_response("* @some-user\n")
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -323,7 +323,7 @@ class TestAuthorMembership:
         respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
             return_value=_membership_active("team-a")
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -345,7 +345,7 @@ class TestAuthorMembership:
         respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
             return_value=_reviews_response([])
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -373,7 +373,7 @@ class TestApprovalAuthorization:
         respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
             return_value=_membership_active("team-a")
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -393,7 +393,7 @@ class TestApprovalAuthorization:
         respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
             return_value=_reviews_response([_review("alice", commit_id="sha-old")])
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -413,7 +413,7 @@ class TestApprovalAuthorization:
         respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
             return_value=_reviews_response([_review("some-bot", user_type="Bot")])
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -438,7 +438,7 @@ class TestApprovalAuthorization:
         respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
             return_value=_membership_pending()
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -469,7 +469,7 @@ class TestApprovalAuthorization:
         respx_mock.get("https://api.github.com/orgs/acme/teams/team-b/memberships/alice").mock(
             return_value=_membership_active("team-b")
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -493,7 +493,7 @@ class TestHeadShaAlwaysEmitted:
         respx_mock.get(
             "https://api.github.com/orgs/acme/teams/team-a/memberships/external-contributor"
         ).mock(return_value=_membership_active("team-a"))
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -513,7 +513,7 @@ class TestHeadShaAlwaysEmitted:
         respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
             return_value=_reviews_response([])
         )
-        async with GitHub("fake-token") as gh:
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -524,9 +524,10 @@ class TestHeadShaAlwaysEmitted:
         assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
 
     async def test_head_sha_absent_on_missing_pr(self) -> None:
-        # No PR → no head_sha available. This is the one denial where
-        # ``head_sha`` is legitimately absent.
-        async with GitHub("fake-token") as gh:
+        # No PR → no head_sha available. One of only three denial modes
+        # where head_sha is legitimately absent (also:
+        # DENIED_UNSUPPORTED_EVENT and DENIED_MALFORMED_PAYLOAD).
+        async with GitHub("fake-token", auto_retry=False) as gh:
             outcome = await authorize(
                 gh,
                 event_name="pull_request_target",
@@ -534,6 +535,128 @@ class TestHeadShaAlwaysEmitted:
                 trusted_bot_ids_raw="",
             )
         assert outcome.head_sha is None
+
+
+@pytest.mark.asyncio
+class TestMalformedPayload:
+    """Payload with missing / wrong-typed fields must return a clean
+    ``DENIED_MALFORMED_PAYLOAD`` outcome, not an uncaught KeyError or
+    TypeError. Downstream contract: no head_sha (the extract step failed
+    before one could be read)."""
+
+    @pytest.mark.parametrize(
+        "mutation",
+        [
+            # user with no login
+            lambda p: p["pull_request"].__setitem__("user", {}),
+            # head with no sha
+            lambda p: p["pull_request"].__setitem__("head", {}),
+            # base with no ref/repo
+            lambda p: p["pull_request"].__setitem__("base", {}),
+            # missing number
+            lambda p: p["pull_request"].pop("number"),
+            # unparseable number
+            lambda p: p["pull_request"].__setitem__("number", "not-an-int"),
+            # unparseable user.id
+            lambda p: p["pull_request"]["user"].__setitem__("id", "not-an-int"),
+        ],
+    )
+    async def test_malformed_pr_returns_clean_outcome(self, mutation) -> None:
+        _, payload = make_event()
+        mutation(payload)
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_MALFORMED_PAYLOAD
+        assert outcome.head_sha is None
+
+    async def test_pull_request_wrong_type_returns_clean_outcome(self) -> None:
+        # pull_request is present but is not a dict (e.g. a list from a
+        # replayed/hand-crafted payload). ``_extract_pr_context`` catches
+        # the TypeError.
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload={"pull_request": ["not", "a", "dict"]},
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_MALFORMED_PAYLOAD
+
+
+@pytest.mark.asyncio
+class TestApiErrorHandling:
+    """Non-404 API failures must produce ``DENIED_API_ERROR`` with
+    ``head_sha`` populated, not an uncaught traceback."""
+
+    async def test_5xx_on_codeowners_fetch_returns_api_error_with_head_sha(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        _, payload = make_event(head_sha="sha-abc")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=Response(503, json={"message": "Service Unavailable"})
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_API_ERROR
+        assert outcome.head_sha == "sha-abc"
+        assert "503" in outcome.message
+
+    async def test_secondary_rate_limit_on_team_membership_returns_api_error(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Secondary rate limits come back as 403 with a message body — not
+        # a 404, so the gh_api helper re-raises. Must surface as
+        # DENIED_API_ERROR, not an uncaught RequestFailed.
+        _, payload = make_event(head_sha="sha-abc", author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @acme/team-a\n")
+        )
+        respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
+            return_value=Response(
+                403,
+                headers={"x-ratelimit-remaining": "0"},
+                json={"message": "API rate limit exceeded"},
+            )
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_API_ERROR
+        assert outcome.head_sha == "sha-abc"
+
+    async def test_transport_error_returns_api_error(self, respx_mock: respx.MockRouter) -> None:
+        # Transport-level failure (connection refused, DNS, TLS handshake).
+        # httpx raises subclasses of httpx.HTTPError before githubkit ever
+        # sees a Response.
+        import httpx as _httpx
+
+        _, payload = make_event(head_sha="sha-abc")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            side_effect=_httpx.ConnectError("connection refused")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_API_ERROR
+        assert outcome.head_sha == "sha-abc"
 
 
 if __name__ == "__main__":

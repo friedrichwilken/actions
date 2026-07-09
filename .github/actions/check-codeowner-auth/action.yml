@@ -40,8 +40,9 @@ outputs:
     description: >-
       Machine-readable authorization result. One of: `authorized_trusted_bot`,
       `authorized_author`, `authorized_approval`, `denied_unsupported_event`,
-      `denied_missing_pr`, `denied_missing_codeowners`,
-      `denied_no_team_codeowners`, `denied_no_approval`.
+      `denied_missing_pr`, `denied_malformed_payload`,
+      `denied_missing_codeowners`, `denied_no_team_codeowners`,
+      `denied_no_approval`, `denied_api_error`.
     value: ${{ steps.authorize.outputs.outcome }}
 
 runs:

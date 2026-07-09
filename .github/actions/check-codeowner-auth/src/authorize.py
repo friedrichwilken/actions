@@ -17,7 +17,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+import httpx
 from githubkit import GitHub
+from githubkit.exception import RequestError, RequestFailed
 
 from . import codeowners, gh_api
 from .approvals import valid_approvals_at_head
@@ -36,9 +38,11 @@ class OutcomeKind(str, Enum):
     AUTHORIZED_APPROVAL = "authorized_approval"
     DENIED_UNSUPPORTED_EVENT = "denied_unsupported_event"
     DENIED_MISSING_PR = "denied_missing_pr"
+    DENIED_MALFORMED_PAYLOAD = "denied_malformed_payload"
     DENIED_MISSING_CODEOWNERS = "denied_missing_codeowners"
     DENIED_NO_TEAM_CODEOWNERS = "denied_no_team_codeowners"
     DENIED_NO_APPROVAL = "denied_no_approval"
+    DENIED_API_ERROR = "denied_api_error"
 
 
 @dataclass(frozen=True)
@@ -50,13 +54,78 @@ class Outcome:
     # surfaces via ``core.setFailed`` — it should tell a maintainer
     # exactly what to do to unblock.
     message: str
-    # If the event had a PR, this is its HEAD SHA. Always populated when
-    # a PR was found in the event, even for denials — downstream jobs
-    # depend on this output being set so they can pin their checkout.
+    # If the event had a PR whose shape was valid enough to extract
+    # ``head.sha``, this is that SHA. Set even for denials from stages
+    # AFTER payload extraction — downstream jobs pin their
+    # ``actions/checkout`` to this output so a mid-run force-push cannot
+    # slip untrusted code through. Absent for the two pre-extraction
+    # failure modes (``DENIED_UNSUPPORTED_EVENT``, ``DENIED_MISSING_PR``,
+    # ``DENIED_MALFORMED_PAYLOAD``) — there's no vetted SHA to emit.
     head_sha: str | None = None
 
 
 ALLOWED_EVENTS: frozenset[str] = frozenset({"pull_request_target", "pull_request_review"})
+
+
+@dataclass(frozen=True)
+class _PRContext:
+    """The subset of the event payload the orchestrator actually uses.
+
+    Extracting into a validated dataclass lets us confine every payload
+    KeyError / TypeError / ValueError to one place (``_extract_pr_context``)
+    and translate them into a clean ``DENIED_MALFORMED_PAYLOAD`` outcome.
+    Without this, any schema change in the GitHub webhook payload — or a
+    replayed / hand-crafted event — would produce an uncaught traceback
+    instead of the documented outcome contract.
+    """
+
+    author_login: str
+    author_id: int
+    author_type: str
+    head_sha: str
+    base_ref: str
+    org: str
+    repo_name: str
+    pr_number: int
+
+
+class _PayloadError(Exception):
+    """Raised by ``_extract_pr_context`` when a required field is missing or malformed."""
+
+
+def _extract_pr_context(pr: Any) -> _PRContext:
+    """Pull the required fields out of the event ``pull_request`` object.
+
+    Any missing / wrong-typed field raises ``_PayloadError`` with a
+    diagnostic pointing at the offending path. The caller catches it and
+    returns a ``DENIED_MALFORMED_PAYLOAD`` outcome.
+
+    All payload access lives here; nothing in the main orchestrator body
+    accesses ``pr[...]`` directly.
+    """
+    try:
+        author = pr["user"]
+        author_login = str(author["login"])
+        author_id = int(author["id"])
+        author_type = str(author["type"])
+        head_sha = str(pr["head"]["sha"])
+        base_ref = str(pr["base"]["ref"])
+        pr_number = int(pr["number"])
+        base_repo = pr["base"]["repo"]
+        org = str(base_repo["owner"]["login"])
+        repo_name = str(base_repo["name"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise _PayloadError(f"Malformed pull_request payload: {e}") from e
+    return _PRContext(
+        author_login=author_login,
+        author_id=author_id,
+        author_type=author_type,
+        head_sha=head_sha,
+        base_ref=base_ref,
+        org=org,
+        repo_name=repo_name,
+        pr_number=pr_number,
+    )
 
 
 async def authorize(
@@ -96,101 +165,148 @@ async def authorize(
             message="Event payload has no `pull_request` object.",
         )
 
-    author = pr["user"]
-    author_login: str = author["login"]
-    author_id: int = int(author["id"])
-    author_type: str = author["type"]
-    head_sha: str = pr["head"]["sha"]
-    base_ref: str = pr["base"]["ref"]
-    pr_number: int = int(pr["number"])
-
-    # The repo we're gating comes from the base side of the PR, not the
-    # head. Fork PRs have a different head repo; we always read teams,
-    # CODEOWNERS, and reviews from the base repository.
-    base_repo = pr["base"]["repo"]
-    org: str = base_repo["owner"]["login"]
-    repo_name: str = base_repo["name"]
-
-    # ── 2. Trusted-bot fast path ────────────────────────────────────
-    trusted_ids = parse_ids(trusted_bot_ids_raw)
-    if author_id in trusted_ids and author_type == "Bot":
+    # ── 2. Extract & validate payload shape ─────────────────────────
+    try:
+        ctx = _extract_pr_context(pr)
+    except _PayloadError as e:
+        # No head_sha available — the extract step is exactly where we
+        # would have got it, and it failed. Downstream jobs pinning to
+        # ``needs.authorize.outputs.head-sha`` will see empty; that's
+        # correct because there's no vetted SHA to hand out.
         return Outcome(
-            kind=OutcomeKind.AUTHORIZED_TRUSTED_BOT,
-            message=(f"Author {author_login!r} (id={author_id}) is a trusted bot."),
-            head_sha=head_sha,
+            kind=OutcomeKind.DENIED_MALFORMED_PAYLOAD,
+            message=(
+                f"{e} Reject via fail-closed; the pull_request payload does not have "
+                f"the shape this action requires."
+            ),
         )
 
-    # ── 3. Fetch CODEOWNERS from base ref ───────────────────────────
-    codeowners_file = await gh_api.fetch_codeowners(gh, owner=org, repo=repo_name, ref=base_ref)
+    # ── 3. Trusted-bot fast path ────────────────────────────────────
+    trusted_ids = parse_ids(trusted_bot_ids_raw)
+    if ctx.author_id in trusted_ids and ctx.author_type == "Bot":
+        return Outcome(
+            kind=OutcomeKind.AUTHORIZED_TRUSTED_BOT,
+            message=(f"Author {ctx.author_login!r} (id={ctx.author_id}) is a trusted bot."),
+            head_sha=ctx.head_sha,
+        )
+
+    # ── 4. Network stages (CODEOWNERS + team membership + reviews) ──
+    # Everything from here on hits the GitHub API. Transient failures
+    # (5xx, secondary rate limits, connection resets) or App-token scope
+    # misconfig used to escape as uncaught tracebacks, breaking the
+    # ``head_sha`` output contract. Wrap once at the boundary so any such
+    # failure produces a clean ``DENIED_API_ERROR`` with ``head_sha``
+    # populated for downstream pinning.
+    try:
+        return await _authorize_with_api(gh, ctx)
+    except RequestFailed as e:
+        status = e.response.status_code
+        return Outcome(
+            kind=OutcomeKind.DENIED_API_ERROR,
+            message=(
+                f"GitHub API returned unexpected status {status} during authorization. "
+                f"Common causes: transient 5xx, secondary rate limit (403/429), or the "
+                f"App-token's permissions are misconfigured (needs Members: Read and "
+                f"Contents: Read). Failing closed."
+            ),
+            head_sha=ctx.head_sha,
+        )
+    except (RequestError, httpx.HTTPError, TimeoutError) as e:
+        # Transport-level: DNS, TLS, connection reset, read timeout, and
+        # githubkit's own transport wrappers (``RequestError`` /
+        # ``RequestTimeout``, both of which wrap the underlying httpx
+        # exceptions before they reach us).
+        return Outcome(
+            kind=OutcomeKind.DENIED_API_ERROR,
+            message=(
+                f"Transport error contacting the GitHub API ({type(e).__name__}: {e}). "
+                f"Failing closed. Rerun the workflow to retry."
+            ),
+            head_sha=ctx.head_sha,
+        )
+
+
+async def _authorize_with_api(gh: GitHub, ctx: _PRContext) -> Outcome:
+    """Run the network-touching authorization stages against ``ctx``.
+
+    Split out so the caller can wrap the whole thing in one try/except
+    without cluttering the orchestrator with error-handling per call.
+    """
+    # ── Fetch CODEOWNERS from base ref ──────────────────────────────
+    codeowners_file = await gh_api.fetch_codeowners(
+        gh, owner=ctx.org, repo=ctx.repo_name, ref=ctx.base_ref
+    )
     if codeowners_file is None:
         return Outcome(
             kind=OutcomeKind.DENIED_MISSING_CODEOWNERS,
             message=(
-                f"No CODEOWNERS file found in base ref {base_ref!r} at any of "
+                f"No CODEOWNERS file found in base ref {ctx.base_ref!r} at any of "
                 f"{list(gh_api.CODEOWNERS_LOCATIONS)}. "
                 "This action requires a CODEOWNERS file with @org/team entries."
             ),
-            head_sha=head_sha,
+            head_sha=ctx.head_sha,
         )
 
-    # ── 4. Parse CODEOWNERS ─────────────────────────────────────────
-    parsed = codeowners.parse(codeowners_file.content, org)
+    # ── Parse CODEOWNERS ────────────────────────────────────────────
+    parsed = codeowners.parse(codeowners_file.content, ctx.org)
     if not parsed.team_slugs:
         skipped_detail = _describe_skipped(parsed)
         return Outcome(
             kind=OutcomeKind.DENIED_NO_TEAM_CODEOWNERS,
             message=(
-                f"CODEOWNERS at {codeowners_file.path}@{base_ref} has no "
-                f"@{org}/<team> entries. "
+                f"CODEOWNERS at {codeowners_file.path}@{ctx.base_ref} has no "
+                f"@{ctx.org}/<team> entries. "
                 f"{skipped_detail}"
                 "This action requires at least one team-scoped codeowner in the same org."
             ),
-            head_sha=head_sha,
+            head_sha=ctx.head_sha,
         )
 
-    # ── 5. Author membership check ──────────────────────────────────
+    # ── Author membership check ─────────────────────────────────────
     author_membership = await gh_api.find_active_team_membership(
-        gh, org=org, username=author_login, team_slugs=parsed.team_slugs
+        gh, org=ctx.org, username=ctx.author_login, team_slugs=parsed.team_slugs
     )
     if author_membership is not None:
         return Outcome(
             kind=OutcomeKind.AUTHORIZED_AUTHOR,
             message=(
-                f"PR author {author_login!r} is an active member of "
-                f"@{org}/{author_membership.team_slug} "
+                f"PR author {ctx.author_login!r} is an active member of "
+                f"@{ctx.org}/{author_membership.team_slug} "
                 f"(role={author_membership.role})."
             ),
-            head_sha=head_sha,
+            head_sha=ctx.head_sha,
         )
 
-    # ── 6. Approval check ───────────────────────────────────────────
-    all_reviews = await gh_api.list_pr_reviews(gh, owner=org, repo=repo_name, pull_number=pr_number)
-    candidates = valid_approvals_at_head(all_reviews, head_sha, author_login)
+    # ── Approval check ──────────────────────────────────────────────
+    all_reviews = await gh_api.list_pr_reviews(
+        gh, owner=ctx.org, repo=ctx.repo_name, pull_number=ctx.pr_number
+    )
+    candidates = valid_approvals_at_head(all_reviews, ctx.head_sha, ctx.author_login)
     for approval in candidates:
         membership = await gh_api.find_active_team_membership(
-            gh, org=org, username=approval.reviewer_login, team_slugs=parsed.team_slugs
+            gh, org=ctx.org, username=approval.reviewer_login, team_slugs=parsed.team_slugs
         )
         if membership is not None:
             return Outcome(
                 kind=OutcomeKind.AUTHORIZED_APPROVAL,
                 message=(
                     f"PR approved by codeowner {approval.reviewer_login!r} "
-                    f"(team=@{org}/{membership.team_slug}) at {head_sha}."
+                    f"(team=@{ctx.org}/{membership.team_slug}) at {ctx.head_sha}."
                 ),
-                head_sha=head_sha,
+                head_sha=ctx.head_sha,
             )
 
     approver_summary = ", ".join(a.reviewer_login for a in candidates) if candidates else "(none)"
-    teams_summary = ", ".join(f"@{org}/{t}" for t in parsed.team_slugs)
+    teams_summary = ", ".join(f"@{ctx.org}/{t}" for t in parsed.team_slugs)
     return Outcome(
         kind=OutcomeKind.DENIED_NO_APPROVAL,
         message=(
-            f"PR author {author_login!r} is not a codeowner. "
-            f"Approvals at HEAD {head_sha} came from: {approver_summary}. "
+            f"PR author {ctx.author_login!r} is not a codeowner. "
+            f"Approvals at HEAD {ctx.head_sha} came from: {approver_summary}. "
             f"None of them are active members of a codeowner team [{teams_summary}]. "
             "A codeowner must submit an APPROVE review on the current commit."
         ),
-        head_sha=head_sha,
+        head_sha=ctx.head_sha,
     )
 
 
