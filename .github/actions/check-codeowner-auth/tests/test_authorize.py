@@ -659,5 +659,244 @@ class TestApiErrorHandling:
         assert outcome.head_sha == "sha-abc"
 
 
+@pytest.mark.asyncio
+class TestIndividualOwners:
+    """The TEMPORARY allow_individual_owners bridge flag.
+
+    Off by default (permanent teams-only posture); when on, individual
+    ``@handle`` CODEOWNERS entries also authorize. These tests pin both the
+    default-off regression guard and the flag-on behavior, including that the
+    individual approval path still passes every existing approval filter.
+    """
+
+    async def test_flag_off_handle_only_codeowners_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Regression guard: with the flag OFF (default), a CODEOWNERS with only
+        # individual handles must still be rejected — the permanent behavior.
+        _, payload = make_event(author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @alice\n")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                # allow_individual_owners defaults to False
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_TEAM_CODEOWNERS
+
+    async def test_flag_on_author_is_individual_authorized(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        _, payload = make_event(author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @alice\n")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
+        assert "individual" in outcome.message.lower()
+
+    async def test_flag_on_author_case_insensitive(self, respx_mock: respx.MockRouter) -> None:
+        # CODEOWNERS lists @Alice; PR author login is alice.
+        _, payload = make_event(author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @Alice\n")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
+
+    async def test_flag_on_individual_approval_authorized(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Author is not a codeowner; an individual codeowner (bob) approves at HEAD.
+        _, payload = make_event(author_login="external", head_sha="sha-current")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @bob\n")
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([_review("bob")])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_APPROVAL
+        assert "individual" in outcome.message.lower()
+
+    async def test_flag_on_individual_bot_approval_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # A bot listed as an individual codeowner still can't approve — the
+        # approval filter rejects bots BEFORE the individual match is consulted.
+        _, payload = make_event(author_login="external")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @some-bot\n")
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([_review("some-bot", user_type="Bot")])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
+
+    async def test_flag_on_individual_self_approval_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Author is NOT a listed codeowner, but IS listed... no. To isolate
+        # "a self-approval doesn't count," the author must not be a listed
+        # individual (else the AUTHOR path authorizes before approvals are
+        # even fetched). So: author @external is not listed; @external is the
+        # only reviewer and self-approves. valid_approvals_at_head drops the
+        # self-review, leaving no candidate → denied.
+        _, payload = make_event(author_login="external", head_sha="sha-current")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @bob\n")
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([_review("external")])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        # The self-review is filtered; @external is not a listed owner anyway.
+        assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
+
+    async def test_flag_on_individual_stale_approval_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Individual codeowner approved, but on an OLD commit. Stale-SHA
+        # filter drops it before the individual match.
+        _, payload = make_event(author_login="external", head_sha="sha-current")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @bob\n")
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([_review("bob", commit_id="sha-old")])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
+
+    async def test_flag_on_mixed_team_and_individual(self, respx_mock: respx.MockRouter) -> None:
+        # CODEOWNERS has both a team and an individual. Author is the
+        # individual (not on the team). Team lookup 404s; individual path
+        # authorizes.
+        _, payload = make_event(author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @acme/team-a @alice\n")
+        )
+        respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/alice").mock(
+            return_value=_membership_not_found()
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
+        assert "individual" in outcome.message.lower()
+
+    async def test_flag_on_mixed_team_path_still_works(self, respx_mock: respx.MockRouter) -> None:
+        # Same mixed CODEOWNERS, but the author is a team member (not the
+        # individual). Team path authorizes; message is the team message.
+        _, payload = make_event(author_login="carol")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @acme/team-a @alice\n")
+        )
+        respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/carol").mock(
+            return_value=_membership_active("team-a")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.AUTHORIZED_AUTHOR
+        assert "team-a" in outcome.message
+
+    async def test_flag_on_author_not_listed_no_approval_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Flag on, author not a listed individual, no approvals → denied.
+        _, payload = make_event(author_login="stranger")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @alice\n")
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
+
+    async def test_flag_on_empty_codeowners_still_denied(
+        self, respx_mock: respx.MockRouter
+    ) -> None:
+        # Fail-closed preserved: flag on but CODEOWNERS has no usable owners.
+        _, payload = make_event(author_login="alice")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("# just a comment\n")
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+                allow_individual_owners=True,
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_TEAM_CODEOWNERS
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

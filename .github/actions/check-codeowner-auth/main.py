@@ -93,6 +93,11 @@ async def _run() -> Outcome | None:
 
     event_name = os.environ.get("GITHUB_EVENT_NAME", "")
     trusted_bot_ids_raw = os.environ.get("INPUT_TRUSTED_BOT_IDS", "")
+    # Temporary bridge flag (default off). Only "true" (case-insensitive)
+    # enables it; anything else — unset, empty, "false", garbage — is off.
+    allow_individual_owners = (
+        os.environ.get("INPUT_ALLOW_INDIVIDUAL_OWNERS", "").strip().lower() == "true"
+    )
     event_payload = _load_event_payload()
     if event_payload is None:
         # ``_load_event_payload`` already called ``set_failed`` with a
@@ -106,6 +111,7 @@ async def _run() -> Outcome | None:
             event_name=event_name,
             event_payload=event_payload,
             trusted_bot_ids_raw=trusted_bot_ids_raw,
+            allow_individual_owners=allow_individual_owners,
         )
 
 

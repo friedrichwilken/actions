@@ -29,6 +29,7 @@ Downstream (privileged) jobs MUST:
 |:--|:--|:--|
 | `github-token` | yes | Installation token from a GitHub App with `Members: Read` and `Contents: Read` on the org. Do NOT pass `GITHUB_TOKEN` — it lacks the org-team scope. |
 | `trusted-bot-ids` | no | Comma-separated numeric GitHub user IDs (not logins) of bots always authorized as PR authors. Each is verified to have `user.type === 'Bot'` at runtime. |
+| `allow-individual-owners` | no | **Temporary** (default `false`). When `true`, individual `@handle` CODEOWNERS entries also authorize, for contexts with no org teams. See [Temporary: running without an org](#temporary-running-without-an-org-allow-individual-owners). Leave `false` in an org. |
 
 ## Outputs
 
@@ -132,6 +133,28 @@ jobs:
 - Repositories that use individual-handle CODEOWNERS must migrate to teams before adopting this gate.
 - The file is read from the **base ref** via the GitHub REST contents API, not the runner filesystem. A PR that modifies CODEOWNERS in its head branch does not affect the gate's decision.
 - Missing / empty / team-less CODEOWNERS files cause the action to fail closed.
+
+### Temporary: running without an org (`allow-individual-owners`)
+
+> **This is a temporary bridge and will be removed.** The permanent model is
+> teams-only (the section above). Leave `allow-individual-owners` unset/`false`
+> in any organization.
+
+The team-membership check uses the GitHub teams API, which only exists for
+**organizations**. To run the action somewhere that has no teams — e.g. a
+personal account, before the repo moves to its org home — set
+`allow-individual-owners: true`. Individual `@handle` CODEOWNERS entries then
+also authorize:
+
+- the PR **author** if their login matches a listed `@handle`, or
+- an **approver** whose login matches a listed `@handle` (the approval still
+  has to pass every normal filter: not a bot, not the author, submitted on the
+  current HEAD SHA).
+
+This path does no extra API call — it's a direct login match against the same
+**base-ref** CODEOWNERS, so a PR still cannot self-authorize by adding its own
+handle in the PR head. When the action moves to an org with real teams, drop
+this input and go back to teams-only.
 
 ## Authorization logic
 

@@ -26,6 +26,19 @@ inputs:
       `29139614` for renovate[bot].
     required: false
     default: ''
+  allow-individual-owners:
+    description: >-
+      TEMPORARY bridge. When 'true', individual `@handle` entries in
+      CODEOWNERS also authorize (the PR author or an approver whose login
+      matches a listed handle), in addition to `@org/team` membership. This
+      exists so the action can run in a context that has no organization
+      teams — e.g. a personal account — before it moves to its org home.
+      Leave this UNSET / 'false' in an org: teams are the intended
+      permanent model, and this flag will be removed once the action lives
+      in an org. Reads the same base-ref CODEOWNERS as the team path, so a
+      PR cannot self-authorize by adding its own handle.
+    required: false
+    default: 'false'
 
 outputs:
   head-sha:
@@ -70,4 +83,5 @@ runs:
       env:
         INPUT_GITHUB_TOKEN: ${{ inputs.github-token }}
         INPUT_TRUSTED_BOT_IDS: ${{ inputs.trusted-bot-ids }}
+        INPUT_ALLOW_INDIVIDUAL_OWNERS: ${{ inputs.allow-individual-owners }}
       run: python -m main

@@ -355,5 +355,92 @@ class TestAuthorizedDispatch:
         assert main.main() == 0
 
 
+class TestAllowIndividualOwnersInput:
+    """``_run`` must parse INPUT_ALLOW_INDIVIDUAL_OWNERS and pass the right
+    bool into ``authorize``. Only 'true' (case-insensitive) enables it."""
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("  true  ", True),
+            ("false", False),
+            ("False", False),
+            ("", False),
+            ("yes", False),
+            ("1", False),
+            ("garbage", False),
+        ],
+    )
+    def test_flag_parsing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        raw: str,
+        expected: bool,
+    ) -> None:
+        event_path = _write_event_file(tmp_path, {"pull_request": {"number": 1}})
+        monkeypatch.setenv("INPUT_GITHUB_TOKEN", "fake-token")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+        monkeypatch.setenv("INPUT_ALLOW_INDIVIDUAL_OWNERS", raw)
+
+        import main
+
+        captured: dict[str, object] = {}
+
+        async def fake_authorize(gh, **kwargs) -> Outcome:
+            captured.update(kwargs)
+            return Outcome(kind=OutcomeKind.DENIED_MISSING_PR, message="stub")
+
+        # Stub the GitHub client context manager so no real client is built.
+        class _FakeGH:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(main, "authorize", fake_authorize)
+        monkeypatch.setattr(main, "GitHub", lambda *a, **k: _FakeGH())
+
+        asyncio.run(main._run())
+        assert captured["allow_individual_owners"] is expected
+
+    def test_flag_unset_defaults_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        event_path = _write_event_file(tmp_path, {"pull_request": {"number": 1}})
+        monkeypatch.setenv("INPUT_GITHUB_TOKEN", "fake-token")
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request_target")
+        monkeypatch.setenv("GITHUB_EVENT_PATH", str(event_path))
+        monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+        monkeypatch.delenv("INPUT_ALLOW_INDIVIDUAL_OWNERS", raising=False)
+
+        import main
+
+        captured: dict[str, object] = {}
+
+        async def fake_authorize(gh, **kwargs) -> Outcome:
+            captured.update(kwargs)
+            return Outcome(kind=OutcomeKind.DENIED_MISSING_PR, message="stub")
+
+        class _FakeGH:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(main, "authorize", fake_authorize)
+        monkeypatch.setattr(main, "GitHub", lambda *a, **k: _FakeGH())
+
+        asyncio.run(main._run())
+        assert captured["allow_individual_owners"] is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
