@@ -3,7 +3,7 @@ Minimal GitHub Actions toolkit shim.
 
 Replaces the parts of ``@actions/core`` we actually use. The GHA runtime
 communicates with the runner via well-known env vars and stdout formatting
-described in <https://docs.github.com/en/actions/using-workflows/workflow-commands-for-github-actions>.
+described in <https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands>.
 
 Kept here rather than pulled in as a third-party dependency to minimize
 supply-chain surface for a security-sensitive action.
