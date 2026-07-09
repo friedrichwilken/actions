@@ -1,0 +1,35 @@
+# Dependabot keeps our pinned action SHAs and Python deps current.
+#
+# Everything in this repo is SHA-pinned (GitHub Actions) or exact-version
+# pinned (pip) on purpose — this repo is a supply-chain dependency for
+# every consumer's pull_request_target trust boundary. Dependabot gives us
+# the security of pinning with the ergonomics of automated, reviewed bumps.
+#
+# NOTE: Dependabot updates third-party action pins (actions/checkout,
+# actions/setup-python, actions/create-github-app-token). It does NOT bump
+# the self-referential pin in authorize.yml
+# (kyma-project/actions/.github/actions/check-codeowner-auth@<sha>) — a
+# repo can't Dependabot-update a reference to itself. Bump that pin
+# manually in the same PR that changes the composite action.
+version: 2
+updates:
+  # Third-party GitHub Actions used across this repo's workflows.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Python runtime + dev dependencies for the composite action.
+  - package-ecosystem: pip
+    directory: /.github/actions/check-codeowner-auth
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python:
+        patterns: ["*"]
+
