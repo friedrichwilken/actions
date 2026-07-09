@@ -40,7 +40,7 @@ Downstream (privileged) jobs MUST:
 ## Recommended integration: the reusable workflow
 
 **Use the reusable workflow, not the composite action directly.** The
-reusable workflow at `kyma-project/actions/.github/workflows/authorize.yml`
+reusable workflow at `friedrichwilken/actions/.github/workflows/authorize.yml`
 owns the entire authorize job — token minting, the gate, and token
 revocation — so a consumer cannot accidentally add a step (e.g. an
 `actions/checkout` of PR head) into the same job as the privileged token.
@@ -58,7 +58,7 @@ permissions: {}
 
 jobs:
   authorize:
-    uses: kyma-project/actions/.github/workflows/authorize.yml@<full-40-char-sha>
+    uses: friedrichwilken/actions/.github/workflows/authorize.yml@<full-40-char-sha>
     secrets:
       app-private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
     with:
@@ -108,7 +108,7 @@ jobs:
           app-id: ${{ vars.AUTH_GATE_APP_ID }}
           private-key: ${{ secrets.AUTH_GATE_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-      - uses: kyma-project/actions/.github/actions/check-codeowner-auth@<full-40-char-sha>
+      - uses: friedrichwilken/actions/.github/actions/check-codeowner-auth@<full-40-char-sha>
         id: gate
         with:
           github-token: ${{ steps.app-token.outputs.token }}
