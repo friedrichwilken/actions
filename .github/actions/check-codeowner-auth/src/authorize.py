@@ -45,6 +45,24 @@ class OutcomeKind(str, Enum):
     DENIED_API_ERROR = "denied_api_error"
 
 
+# Explicit membership set. Callers that need to branch on
+# "authorized vs denied" MUST use this set, not string-prefix checks on
+# ``kind.value``. String prefixes look convenient but let a future
+# contributor add an authorized outcome whose value doesn't start with
+# ``authorized_`` (e.g. a hypothetical ``bypassed_by_emergency_override``)
+# and have it silently classified as a denial.
+#
+# The categorization lives next to the enum on purpose: adding a new
+# outcome forces you to decide which set it belongs to in the same diff.
+AUTHORIZED_KINDS: frozenset[OutcomeKind] = frozenset(
+    {
+        OutcomeKind.AUTHORIZED_TRUSTED_BOT,
+        OutcomeKind.AUTHORIZED_AUTHOR,
+        OutcomeKind.AUTHORIZED_APPROVAL,
+    }
+)
+
+
 @dataclass(frozen=True)
 class Outcome:
     """The result of one authorization run."""
