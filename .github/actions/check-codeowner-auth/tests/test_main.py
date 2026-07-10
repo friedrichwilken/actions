@@ -145,6 +145,27 @@ class TestMainExitCodeMapping:
         monkeypatch.setattr(main, "_run", fake_run)
         assert main.main() != 0
 
+    def test_none_outcome_sets_config_error_and_nonzero(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # When _run() returns None (bad token / unreadable / malformed event),
+        # main() must STILL emit the `outcome` output — set to
+        # denied_config_error — so the "outcome on every run" contract holds
+        # instead of leaving downstream consumers reading an empty string.
+        out_file = tmp_path / "out"
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out_file))
+
+        async def fake_run() -> Outcome | None:
+            return None
+
+        import main
+
+        monkeypatch.setattr(main, "_run", fake_run)
+        rc = main.main()
+        assert rc != 0
+        written = out_file.read_text()
+        assert "outcome=denied_config_error" in written
+
 
 class TestLoadEventPayload:
     """Verify ``_load_event_payload`` fails loudly (not silently) on every

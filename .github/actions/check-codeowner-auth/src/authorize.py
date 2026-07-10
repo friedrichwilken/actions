@@ -43,6 +43,11 @@ class OutcomeKind(str, Enum):
     DENIED_NO_TEAM_CODEOWNERS = "denied_no_team_codeowners"
     DENIED_NO_APPROVAL = "denied_no_approval"
     DENIED_API_ERROR = "denied_api_error"
+    # Set by main.py (not the orchestrator) for failures that happen BEFORE
+    # authorize() can run: no usable github-token, or an unreadable/malformed
+    # event payload. Emitted so the `outcome` output is populated on every
+    # run — including these config-level early exits — rather than left empty.
+    DENIED_CONFIG_ERROR = "denied_config_error"
 
 
 # Explicit membership set. Callers that need to branch on

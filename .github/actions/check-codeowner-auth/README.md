@@ -35,8 +35,8 @@ Downstream (privileged) jobs MUST:
 
 | Output | Description |
 |:--|:--|
-| `head-sha` | The vetted PR head commit SHA. Downstream `actions/checkout` MUST pin to this value. Set on every run with a valid PR payload (both authorized and denied). Absent for the three pre-extraction failure modes: `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`. |
-| `outcome` | Machine-readable authorization result: `authorized_trusted_bot`, `authorized_author`, `authorized_approval`, `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`, `denied_missing_codeowners`, `denied_no_team_codeowners`, `denied_no_approval`, `denied_api_error`. |
+| `head-sha` | The vetted PR head commit SHA. Downstream `actions/checkout` MUST pin to this value. Set on every run with a valid PR payload (both authorized and denied). Absent for the pre-extraction failure modes: `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`, `denied_config_error`. |
+| `outcome` | Machine-readable authorization result, **set on every run**: `authorized_trusted_bot`, `authorized_author`, `authorized_approval`, `denied_unsupported_event`, `denied_missing_pr`, `denied_malformed_payload`, `denied_missing_codeowners`, `denied_no_team_codeowners`, `denied_no_approval`, `denied_api_error`, `denied_config_error` (bad token or unreadable/malformed event, set before the gate runs). |
 
 ## Recommended integration: the reusable workflow
 
@@ -191,6 +191,10 @@ On `pull_request_target`, a naive `actions/checkout` writes the PR-HEAD version 
 
 GitHub usernames can be recreated after deletion. A trusted-bot allowlist keyed by login would break the moment `renovate[bot]` is deleted and re-registered. Numeric user IDs are stable. The allowlist also requires `user.type === 'Bot'` as defense-in-depth.
 
+### Trusted bots skip CODEOWNERS entirely — the trade-off
+
+A PR whose author matches a `trusted-bot-ids` entry (and is `user.type === 'Bot'`) is authorized **before any CODEOWNERS fetch or approval check** — it gets whole-run authorization with no codeowner involvement. This is deliberate (it's how dependency-update bots like Renovate open PRs that must run privileged jobs without a human approving each one), but be clear-eyed about the blast radius: **a compromised trusted-bot credential is a full `pull_request_target` bypass** for every consumer that lists that bot. `user.type` is set by GitHub and not attacker-forgeable, so an ordinary user cannot impersonate a bot — but the bot's own token/app is now part of your trust boundary. Only add a bot to `trusted-bot-ids` if you would equally trust it to approve arbitrary code, and prefer scoping which repos install the bot.
+
 ### Why the approver-not-author check
 
 GitHub server-side blocks a PR author from approving their own PR with 422. Defense-in-depth: the action also filters `review.user.login !== pr.user.login` in case that server-side check is ever bypassed by a race or edge case.
@@ -219,3 +223,4 @@ Install the App on a **Selected repositories** list, not org-wide. Rotate the pr
 - **No mid-run re-check.** Once a downstream job starts, it runs to completion regardless of subsequent approval dismissals. Same limitation as the manual env-gate.
 - **No script-injection protection.** If a consumer workflow interpolates PR-controlled fields into `run:` blocks, the auth-gate cannot help. Workflow-file discipline is a separate concern.
 - **No cross-org codeowner support.** `@other-org/team` entries in CODEOWNERS are ignored. The action only checks teams within the same org as the repository.
+- **The reusable workflow's inner action pin is bumped manually.** `authorize.yml` pins the composite action by commit SHA. Dependabot cannot bump a repository's reference to itself, so when the action changes, that pin must be updated in the same PR (a stale pin means consumers keep running the old gate code). Once versioned release tags exist, the pin can move to a release SHA.
