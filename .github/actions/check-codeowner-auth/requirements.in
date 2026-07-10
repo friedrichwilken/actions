@@ -1,0 +1,10 @@
+# Top-level runtime dependencies for check-codeowner-auth.
+#
+# This is the SOURCE file. The pinned, fully-hashed lock is requirements.txt,
+# generated with:
+#
+#   pip-compile --generate-hashes --allow-unsafe requirements.in
+#
+# Keep this minimal — this action is a security gate and every dependency is a
+# supply-chain surface. Edit here, then regenerate requirements.txt.
+githubkit==0.13.4
