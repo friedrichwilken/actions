@@ -115,7 +115,12 @@ def parse(text: str, org: str) -> ParseResult:
             if team_match:
                 owner_org, owner_slug = team_match.group(1), team_match.group(2)
                 if owner_org.lower() == org_lower:
-                    seen_teams.setdefault(owner_slug, None)
+                    # GitHub team slugs are always lowercase. Normalize here
+                    # so an uppercase CODEOWNERS entry (@org/Team-A) resolves
+                    # to the real slug (team-a) instead of 404-ing the teams
+                    # API and denying a legitimate codeowner — and so it
+                    # dedups against a lowercase spelling of the same team.
+                    seen_teams.setdefault(owner_slug.lower(), None)
                 else:
                     seen_cross_org.setdefault(owner, None)
                 continue

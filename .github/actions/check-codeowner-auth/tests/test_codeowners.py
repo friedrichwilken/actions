@@ -34,6 +34,21 @@ class TestBasicTeamEntries:
         r = parse("* @acme/beta\ndocs/ @acme/alpha\n", "acme")
         assert r.team_slugs == ("beta", "alpha")
 
+    def test_uppercase_team_slug_normalized_to_lowercase(self) -> None:
+        # GitHub team slugs are always lowercase. An uppercase CODEOWNERS
+        # entry must be normalized so the teams API is queried with the real
+        # slug (lowercase) instead of 404-ing and denying a legitimate
+        # codeowner.
+        r = parse("* @acme/Team-A\n", "acme")
+        assert r.team_slugs == ("team-a",)
+
+    def test_mixed_case_same_team_deduplicated(self) -> None:
+        # @acme/Team-A and @acme/team-a are the same team; after
+        # normalization they must collapse to one slug (and one API call),
+        # not two.
+        r = parse("* @acme/Team-A\ndocs/ @acme/team-a\n", "acme")
+        assert r.team_slugs == ("team-a",)
+
 
 class TestComments:
     """CODEOWNERS supports # comments both whole-line and inline."""

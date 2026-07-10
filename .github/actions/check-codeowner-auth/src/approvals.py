@@ -45,6 +45,13 @@ class Review:
     # unknown-time review is treated as the OLDEST possible submission.
     # That's the fail-open direction: a review with unknown submission
     # time will lose to any review with a real timestamp.
+    review_id: int
+    # GitHub's monotonically-increasing review id. Used as the secondary
+    # sort key so that two reviews from the same reviewer with an identical
+    # ``submitted_at`` (GitHub timestamps are second-granularity, so ties
+    # are possible) still order deterministically — the higher id is the
+    # later review. Without this, a same-second APPROVED could beat a later
+    # CHANGES_REQUESTED depending purely on API return order.
 
 
 def valid_approvals_at_head(
@@ -66,17 +73,20 @@ def valid_approvals_at_head(
         Tuple of reviews that pass the filter, deduplicated by reviewer
         (latest non-COMMENTED wins). Order is not meaningful.
     """
-    # Sort by ``submitted_at`` ascending BEFORE deduplicating. GitHub's
-    # docs say reviews are returned in chronological order, but that
-    # promise doesn't survive pagination reordering, same-second ties, or
-    # a future API change. Explicit sort here means the dict-overwrite
-    # dedup below is deterministic: the highest ``submitted_at`` per
-    # reviewer wins regardless of the input order.
+    # Sort by (submitted_at, review_id) ascending BEFORE deduplicating.
+    # GitHub's docs say reviews are returned in chronological order, but that
+    # promise doesn't survive pagination reordering or a future API change,
+    # and ``submitted_at`` is only second-granularity so two reviews from one
+    # reviewer can tie. The review id is monotonically increasing, so it
+    # breaks ties deterministically — the higher id is the later review.
+    # With this, the dict-overwrite dedup below always keeps each reviewer's
+    # genuinely-latest stance regardless of the order the API returns them.
     #
-    # Reviews with ``submitted_at is None`` sort first (treated as
-    # oldest) — the fail-open direction for the "did this reviewer take
-    # a later stance" question. A dismissed or force-pushed review with
-    # a real timestamp will always beat an unknown-time one.
+    # Reviews with ``submitted_at is None`` sort first (treated as oldest) —
+    # the fail-open direction for the "did this reviewer take a later stance"
+    # question. A dismissed or force-pushed review with a real timestamp will
+    # always beat an unknown-time one; among unknown-time reviews the id still
+    # orders them.
     ordered = sorted(reviews, key=_sort_key)
 
     # Deduplicate to the latest non-COMMENTED state per reviewer.
@@ -107,9 +117,11 @@ def valid_approvals_at_head(
 _MIN_TIMESTAMP = datetime.min.replace(tzinfo=None)
 
 
-def _sort_key(r: Review) -> datetime:
+def _sort_key(r: Review) -> tuple[datetime, int]:
+    # Secondary key is the monotonic review id, so same-second ties order by
+    # true submission order rather than API return order.
     if r.submitted_at is None:
-        return _MIN_TIMESTAMP
+        return (_MIN_TIMESTAMP, r.review_id)
     ts = r.submitted_at
     if ts.tzinfo is not None:
         # Convert to the true UTC instant, then drop tzinfo, so the sort
@@ -118,4 +130,4 @@ def _sort_key(r: Review) -> datetime:
         # (GitHub always returns UTC 'Z', but a hand-crafted event or a
         # future githubkit change could carry an offset).
         ts = ts.astimezone(UTC).replace(tzinfo=None)
-    return ts
+    return (ts, r.review_id)
