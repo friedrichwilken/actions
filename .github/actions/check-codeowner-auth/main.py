@@ -20,7 +20,7 @@ from pathlib import Path
 from githubkit import GitHub
 
 from src import _actions
-from src.authorize import AUTHORIZED_KINDS, Outcome, authorize
+from src.authorize import AUTHORIZED_KINDS, Outcome, OutcomeKind, authorize
 
 
 def _load_event_payload() -> dict | None:
@@ -119,7 +119,12 @@ def main() -> int:
     """CLI entry point. Returns the process exit code."""
     outcome = asyncio.run(_run())
     if outcome is None:
-        # ``_run`` already called ``set_failed`` with a specific reason.
+        # ``_run`` already called ``set_failed`` with a specific reason (bad
+        # token / unreadable / malformed event). Still emit the ``outcome``
+        # output so the documented "outcome is set on every run" contract
+        # holds — a consumer branching on the outcome string sees an explicit
+        # ``denied_config_error`` rather than an empty string.
+        _actions.set_output("outcome", OutcomeKind.DENIED_CONFIG_ERROR.value)
         return _actions.get_exit_code() or 1
 
     if outcome.head_sha is not None:
