@@ -161,10 +161,13 @@ async def list_pr_reviews(
         per_page=100,
     ):
         user = getattr(review, "user", None)
-        if user is None:
-            # Ghost user (account deleted). Their reviews cannot count as
-            # authorization anyway — a login of ``None`` won't match any
-            # team membership check.
+        login = getattr(user, "login", "") if user is not None else ""
+        if not login:
+            # No usable reviewer login — a deleted/ghost account, or a
+            # payload where ``user`` is absent or has an empty login. Such a
+            # review can never match a team membership check or an individual
+            # CODEOWNERS handle, so drop it here rather than carry an
+            # empty-login row that only pretends it could match.
             continue
         submitted_at = getattr(review, "submitted_at", None)
         # githubkit types ``submitted_at`` as ``Literal[UNSET] | datetime | None``.
@@ -174,11 +177,12 @@ async def list_pr_reviews(
             submitted_at = None
         reviews.append(
             Review(
-                reviewer_login=getattr(user, "login", ""),
+                reviewer_login=login,
                 reviewer_type=getattr(user, "type", ""),
                 state=getattr(review, "state", ""),
                 commit_id=getattr(review, "commit_id", "") or "",
                 submitted_at=submitted_at,
+                review_id=int(getattr(review, "id", 0) or 0),
             )
         )
     return reviews

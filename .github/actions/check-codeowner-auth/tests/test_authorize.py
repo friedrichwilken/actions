@@ -273,14 +273,21 @@ class TestCodeownersFetch:
         assert outcome.kind == OutcomeKind.DENIED_MISSING_CODEOWNERS
 
     async def test_first_path_wins(self, respx_mock: respx.MockRouter) -> None:
-        # Serve .github/CODEOWNERS; the fallback locations must not be
-        # queried. (respx will accept unmatched calls in some configs;
-        # we just verify the first response was used by checking that
-        # the author fails membership and we end up in NO_APPROVAL.)
+        # Serve .github/CODEOWNERS; the fallback locations (CODEOWNERS,
+        # docs/CODEOWNERS) must NOT be queried. Register routes for the
+        # fallbacks so we can assert they were never called — this pins the
+        # short-circuit in fetch_codeowners (a regression that queried all
+        # three paths would trip the assertions below).
         _, payload = make_event()
-        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
-            return_value=_codeowners_response("* @acme/team-a\n")
-        )
+        first = respx_mock.get(
+            "https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS"
+        ).mock(return_value=_codeowners_response("* @acme/team-a\n"))
+        fallback_root = respx_mock.get(
+            "https://api.github.com/repos/acme/widget/contents/CODEOWNERS"
+        ).mock(return_value=_codeowners_response("* @acme/should-not-be-read\n"))
+        fallback_docs = respx_mock.get(
+            "https://api.github.com/repos/acme/widget/contents/docs/CODEOWNERS"
+        ).mock(return_value=_codeowners_response("* @acme/should-not-be-read\n"))
         respx_mock.get(
             "https://api.github.com/orgs/acme/teams/team-a/memberships/external-contributor"
         ).mock(return_value=_membership_not_found())
@@ -295,6 +302,10 @@ class TestCodeownersFetch:
                 trusted_bot_ids_raw="",
             )
         assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
+        # The first location was used; the fallbacks were never queried.
+        assert first.called
+        assert not fallback_root.called
+        assert not fallback_docs.called
 
     async def test_no_team_entries_denied(self, respx_mock: respx.MockRouter) -> None:
         _, payload = make_event()
@@ -311,6 +322,32 @@ class TestCodeownersFetch:
         assert outcome.kind == OutcomeKind.DENIED_NO_TEAM_CODEOWNERS
         # Diagnostic should mention the individual we ignored.
         assert "@some-user" in outcome.message
+
+    async def test_empty_login_review_is_dropped(self, respx_mock: respx.MockRouter) -> None:
+        # A review whose user object has an empty login (deleted/ghost-ish
+        # payload) must be dropped by list_pr_reviews, not carried as an
+        # empty-login row. Here it's the only "approval" at HEAD; dropping it
+        # leaves no codeowner approval → denied (fail-closed). If the empty
+        # login leaked through it could never match a team anyway, but this
+        # pins that the row is discarded at the source.
+        _, payload = make_event(author_login="external")
+        respx_mock.get("https://api.github.com/repos/acme/widget/contents/.github/CODEOWNERS").mock(
+            return_value=_codeowners_response("* @acme/team-a\n")
+        )
+        respx_mock.get("https://api.github.com/orgs/acme/teams/team-a/memberships/external").mock(
+            return_value=_membership_not_found()
+        )
+        respx_mock.get("https://api.github.com/repos/acme/widget/pulls/42/reviews").mock(
+            return_value=_reviews_response([_review("")])
+        )
+        async with GitHub("fake-token", auto_retry=False) as gh:
+            outcome = await authorize(
+                gh,
+                event_name="pull_request_target",
+                event_payload=payload,
+                trusted_bot_ids_raw="",
+            )
+        assert outcome.kind == OutcomeKind.DENIED_NO_APPROVAL
 
 
 @pytest.mark.asyncio

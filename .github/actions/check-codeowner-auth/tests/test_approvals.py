@@ -14,6 +14,11 @@ from src.approvals import Review, valid_approvals_at_head
 # oldest path is actually exercised.
 _UNSET = object()
 
+# Monotonic counter so each _review() gets a distinct, increasing review_id
+# by default — mirrors GitHub's real behavior (later review = higher id) and
+# keeps the sort deterministic without every test having to pass an id.
+_next_review_id = iter(range(1, 1_000_000))
+
 
 def _review(
     *,
@@ -22,6 +27,7 @@ def _review(
     state: str = "APPROVED",
     commit_id: str = "abc123",
     submitted_at=_UNSET,
+    review_id: int | None = None,
 ) -> Review:
     # Default (unspecified) timestamp is a fixed anchor rather than None so
     # the many order-insensitive tests don't accidentally observe
@@ -29,12 +35,15 @@ def _review(
     # unknown-time review passes ``submitted_at=None`` explicitly.
     if submitted_at is _UNSET:
         submitted_at = datetime(2026, 1, 1, tzinfo=UTC)
+    if review_id is None:
+        review_id = next(_next_review_id)
     return Review(
         reviewer_login=login,
         reviewer_type=reviewer_type,
         state=state,
         commit_id=commit_id,
         submitted_at=submitted_at,
+        review_id=review_id,
     )
 
 
@@ -204,6 +213,41 @@ class TestChronologicalSort:
         # Should not raise; both are valid approvals at head.
         result = valid_approvals_at_head(reviews, "abc123", "author")
         assert {r.reviewer_login for r in result} == {"alice", "bob"}
+
+
+class TestSameSecondTie:
+    """When one reviewer submits two reviews with an IDENTICAL submitted_at
+    (GitHub timestamps are second-granularity, so ties happen), the review
+    id breaks the tie — the higher id is the later review. Without the id
+    tiebreaker the outcome depended on API return order (a fail-open)."""
+
+    _SAME = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+    def test_tie_later_id_changes_requested_wins_denied(self) -> None:
+        # Same second: APPROVED (id=10) then CHANGES_REQUESTED (id=11).
+        # id=11 is later → withdrawn → denied. Input order puts APPROVED
+        # LAST so a tie broken by input order would wrongly authorize.
+        reviews = [
+            _review(
+                login="alice", state="CHANGES_REQUESTED", submitted_at=self._SAME, review_id=11
+            ),
+            _review(login="alice", state="APPROVED", submitted_at=self._SAME, review_id=10),
+        ]
+        assert valid_approvals_at_head(reviews, "abc123", "author") == ()
+
+    def test_tie_later_id_approved_wins_authorized(self) -> None:
+        # Same second: CHANGES_REQUESTED (id=10) then APPROVED (id=11).
+        # id=11 later → approved wins. Input order puts CHANGES last, so a
+        # tie broken by input order would wrongly deny.
+        reviews = [
+            _review(login="alice", state="APPROVED", submitted_at=self._SAME, review_id=11),
+            _review(
+                login="alice", state="CHANGES_REQUESTED", submitted_at=self._SAME, review_id=10
+            ),
+        ]
+        result = valid_approvals_at_head(reviews, "abc123", "author")
+        assert len(result) == 1
+        assert result[0].state == "APPROVED"
 
 
 if __name__ == "__main__":
