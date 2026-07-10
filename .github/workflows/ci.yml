@@ -37,7 +37,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
+          # Runtime deps install with --require-hashes, the same way the
+          # action installs them at runtime — so CI fails if the hashed lock
+          # is stale or tampered. Dev deps (ruff/pytest/etc.) are not hashed
+          # and install separately; pip's all-or-nothing hash rule applies
+          # per -r invocation, so the two calls don't conflict.
+          pip install --require-hashes -r requirements.txt
           pip install -r requirements-dev.txt
 
       - name: Lint
