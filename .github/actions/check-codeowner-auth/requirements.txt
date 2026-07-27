@@ -26,17 +26,29 @@ certifi==2026.6.17 \
     # via
     #   httpcore
     #   httpx
-githubkit==0.13.4 \
-    --hash=sha256:60a7066a9e2ee9ade07d7fd128d13cd6287bafa1283e4eda3bdd3cc087df229f \
-    --hash=sha256:ce7ab396ab80f059724bd3b26775b0266ff9b84c926b83a298bbdc1527015fbd
-    # via -r requirements.in
+githubkit==0.16.0 \
+    --hash=sha256:b0aa62a535ac99a5d958cf51a6fec66416247ddb5832be57c3f8c4995a34bcca \
+    --hash=sha256:b927f6bb1d4646ae64282a4373dd4a720e568c789d5b4ed1e8f06c562b642b26
+    # via
+    #   -r requirements.in
+    #   githubkit-schemas
+githubkit-schemas==26.7.11 \
+    --hash=sha256:365a4c107751678661ca2ec9ec4054e5fc7561dc2c2f8210c5dbca5809439ccc \
+    --hash=sha256:4fc44381fb704d40ca9231e51187bd862bc45599772aa9412da3c59bf76d0a49
+    # via
+    #   githubkit
+    #   githubkit-schemas-2026-03-10
+githubkit-schemas-2026-03-10==26.7.11 \
+    --hash=sha256:1114da11abcc6cb31dbde3f9f1b966e2f19f76deeb1469a419d93cb1fff2a7eb \
+    --hash=sha256:2529b4df757bf7a8f849652e0e328f30b15899043d93f77385f290d9889f54d2
+    # via githubkit-schemas
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
     # via httpcore
-hishel==0.1.5 \
-    --hash=sha256:0bfbe9a2b9342090eba82ba6de88258092e1c4c7b730cd4cb4b570e4b40e44a7 \
-    --hash=sha256:9d40c682cd94fd6e1394fb05713ae20a75ed8aeba6f5272380444039ce6257f2
+hishel[async,httpx]==1.3.0 \
+    --hash=sha256:5be585dca8c035866cffc745a50dbce6b277a3d1f4b07ef24f77c07f6b31ff92 \
+    --hash=sha256:b803ad9f1d410085b61459a5dbbd273806215021e672198ba911c7d3db14adaa
     # via githubkit
 httpcore==1.0.9 \
     --hash=sha256:2d400746a40668fc9dec9810239072b40b4484b640a8c38fd654a024c7a1bf55 \
