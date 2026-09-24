@@ -7,4 +7,4 @@
 #
 # Keep this minimal — this action is a security gate and every dependency is a
 # supply-chain surface. Edit here, then regenerate requirements.txt.
-githubkit==0.13.4
+githubkit==0.16.0
