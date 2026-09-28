@@ -26,9 +26,9 @@ certifi==2026.6.17 \
     # via
     #   httpcore
     #   httpx
-githubkit==0.16.0 \
-    --hash=sha256:b0aa62a535ac99a5d958cf51a6fec66416247ddb5832be57c3f8c4995a34bcca \
-    --hash=sha256:b927f6bb1d4646ae64282a4373dd4a720e568c789d5b4ed1e8f06c562b642b26
+githubkit==0.16.1 \
+    --hash=sha256:a791e0eb57ec80824a711321376c5816aa1cd204e6982e4ad5ddce6c87490863 \
+    --hash=sha256:f56ea4e796f169773d114c7f39089790f99443f1d05871d594d6bdca7928945c
     # via
     #   -r requirements.in
     #   githubkit-schemas
